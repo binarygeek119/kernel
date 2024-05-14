@@ -27,6 +27,12 @@
 /* Cambridge, MA 02139, USA.                                    */
 /****************************************************************/
 
+#ifdef MAIN
+#ifdef VERSION_STRINGS
+static BYTE *device_hRcsId =
+    "$Id$";
+#endif
+#endif
 
 /*
  *      Status Word Bits
@@ -150,15 +156,15 @@ typedef struct {
   UWORD bpb_nbyte;              /* Bytes per Sector             */
   UBYTE bpb_nsector;            /* Sectors per Allocation Unit  */
   UWORD bpb_nreserved;          /* # Reserved Sectors           */
-  UBYTE bpb_nfat;               /* # FATs                       */
+  UBYTE bpb_nfat;               /* # FAT's                      */
   UWORD bpb_ndirent;            /* # Root Directory entries     */
-  UWORD bpb_nsize;              /* Total volume Size in sectors */
+  UWORD bpb_nsize;              /* Size in sectors              */
   UBYTE bpb_mdesc;              /* MEDIA Descriptor Byte        */
   UWORD bpb_nfsect;             /* FAT size in sectors          */
   UWORD bpb_nsecs;              /* Sectors per track            */
   UWORD bpb_nheads;             /* Number of heads              */
   ULONG bpb_hidden;             /* Hidden sectors               */
-  ULONG bpb_huge;               /* Total volume Size in sectors if*/
+  ULONG bpb_huge;               /* Size in sectors if           */
   /* bpb_nsize == 0               */
 #ifdef WITHFAT32
   ULONG bpb_xnfsect;            /* FAT size in sectors if       */
@@ -168,7 +174,7 @@ typedef struct {
   /* bits 6-4: reserved (0)       */
   /* bits 3-0: active FAT number  */
   UWORD bpb_xfsversion;         /* filesystem version           */
-  ULONG bpb_xrootclst;          /* starting cluster of root dir */
+  CLUSTER bpb_xrootclst;        /* starting cluster of root dir */
   UWORD bpb_xfsinfosec;         /* FS info sector number,       */
   /* 0xFFFF if unknown            */
   UWORD bpb_xbackupsec;         /* backup boot sector number    */
@@ -177,8 +183,7 @@ typedef struct {
 } bpb;
 
 #define N_RETRY         5       /* number of retries permitted  */
-
-#include "dsk.h"
+#define SEC_SIZE        512     /* size of sector in bytes      */
 
 #define LBA_READ         0x4200
 #define LBA_WRITE        0x4300
@@ -242,7 +247,7 @@ typedef struct ddtstruct {
 /* description flag bits */
 #define DF_FIXED      0x001     /* fixed media, ie hard drive */
 #define DF_CHANGELINE 0x002     /* door lock or disk change detection reported as supported */
-#define DF_CURBPBLOCK 0x004     /* current BPB locked, use existing BPB instead of building one */
+#define DF_CURBPBLOCK 0x004     /* current BPB locked ??? */
 #define DF_SAMESIZE   0x008     /* all sectors in a track are the same size */
 #define DF_MULTLOG    0x010     /* physical drive represents multiple logical ones, eg A: & B: */
 #define DF_CURLOG     0x020     /* active (current) logical drive for this physical drive */
@@ -253,7 +258,6 @@ typedef struct ddtstruct {
 /* freedos specific flag bits */
 #define DF_LBA        0x400
 #define DF_WRTVERIFY  0x800
-#define DF_DMA_TRANSPARENT   0x1000 /* DMA boundary errors are handled transparently */
 
 /* typedef struct ddtstruct ddt;*/
 
@@ -494,12 +498,7 @@ COUNT block_error(request * rq, COUNT nDrive, struct dhdr FAR * lpDevice, int mo
 WORD ASMCFUNC FAR clk_driver(rqptr rp);
 
 /* execrh.asm */
-#if defined(__WATCOMC__) && _M_IX86 >= 300
-WORD execrh(request FAR *, struct dhdr FAR *);
-#pragma aux execrh "^" parm reverse routine [] modify [ax bx cx dx es fs gs]
-#else
 WORD ASMPASCAL execrh(request FAR *, struct dhdr FAR *);
-#endif
 
 /*
  *      end of device.h

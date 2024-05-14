@@ -27,36 +27,27 @@
 
 
 ; Memory layout for the FreeDOS FAT32 single stage boot process:
-;
+
 ;	...
-;	|-------| 1FE0h:7E00h = 27C00h (159 KiB)
-;	|BOOTSEC| loader relocates itself here first thing,
-;	|RELOC.	|  before loading root directory/FAT/kernel file
-;	|-------| 1FE0h:7C00h = 27A00h (158 KiB)
-;	| STACK | below relocated loader, above FAT sector (size 22 KiB)
+;	|-------| 1FE0:7E00
+;	|BOOTSEC|
+;	|RELOC.	|
+;	|-------| 1FE0:7C00
 ;	...
-;	|-------| 2200h:2000h = 24000h (144 KiB)
-;	|  FAT  | (only 1 sector buffered, maximum sector size 8 KiB)
-;	|-------| 2200h:0000h = 22000h (136 KiB)
+;	|-------| 2000:0200
+;	|  FAT  | (only 1 sector buffered)
+;	|-------| 2000:0000
 ;	...
-;	|-------| 0000h:7E00h = 07E00h (31.5 KiB)
+;	|-------| 0000:7E00
 ;	|BOOTSEC| overwritten by the kernel, so the
 ;	|ORIGIN | bootsector relocates itself up...
-;	|-------| 0000h:7C00h = 07C00h (31 KiB)
+;	|-------| 0000:7C00
 ;	...
 ;	|-------|
-;	|KERNEL	| maximum size 128 KiB (overwrites bootsec origin)
-;	|LOADED	| (holds 1 sector directory buffer before kernel file load)
-;	|-------| 0060h:0000h = 00600h (1.5 KiB)
+;	|KERNEL	| maximum size 134k (overwrites bootsec origin)
+;	|LOADED	| (holds 1 sector directory buffer before kernel load)
+;	|-------| 0060:0000
 ;	...
-; The kernel load segment may be patched using the SYS /L switch.
-;  We support values between 0x60 and 0x200 here, with file size
-;  of up to 128 KiB (rounded to cluster size). Default is 0x60.
-
-                ; NOTE: sys must be updated if magic offsets change
-%assign ISFAT1216DUAL 0
-	%include "magic.mac"
-
 
 segment	.text
 
@@ -94,7 +85,7 @@ Entry:		jmp	short real_start
 
 %define LOADSEG		0x0060
 
-%define FATSEG		0x2200
+%define FATSEG		0x2000
 
 %define	fat_secshift	fat_afterss-1	; each fat sector describes 2^??
 					; clusters (db) (selfmodifying)
@@ -105,11 +96,7 @@ Entry:		jmp	short real_start
 %define data_start	bp+0x4c		; first data sector (dd)
 					; (overwriting unused bytes)
 
-		times   52h - ($ - $$) db 0
-		; The filesystem ID is used by lDOS's instsect (by ecm)
-		;  by default to validate that the filesystem matches.
-		db "FAT32"
-		times   5Ah - ($ - $$) db 32
+		times	0x5a-$+$$ db 0
 		; not used: [0x42] = byte 0x29 (ext boot param flag)
 		; [0x43] = dword serial
 		; [0x47] = label (padded with 00, 11 bytes)
@@ -134,9 +121,7 @@ real_start:	cld
 		rep	movsw		; move boot code to the 0x1FE0:0x0000
 		jmp	word 0x1FE0:cont
 
-loadseg_off	dw	0
-	magicoffset "loadseg", 78h
-		dw	LOADSEG
+loadseg_off	dw	0, LOADSEG
 
 ; -------------
 
@@ -144,15 +129,10 @@ cont:		mov	ds, ax
 		mov	ss, ax		; stack and BP-relative moves up, too
                 lea     sp, [bp-0x20]
 		sti
-	magicoffset "set unit", 82h
 		mov	[drive], dl	; BIOS passes drive number in DL
 
-%ifndef QUIET
 		mov	si, msg_LoadFreeDOS
 		call	print		; modifies AX BX SI
-%else ; ensure code after this still at same location
-		times 6 nop
-%endif
 
 
 ; -------------
@@ -254,9 +234,7 @@ rk_walk_fat:	pop	eax
 		
 ;-----------------------------------------------------------------------
 
-boot_success:
-		mov dl, [drive]			; for Enhanced DR-DOS load
-		mov bl, dl			; for FreeDOS load
+boot_success:	mov	bl, [drive]
 		jmp	far [loadsegoff_60]
 
 ;-----------------------------------------------------------------------
@@ -331,8 +309,6 @@ convert_cluster:
 		dec	eax
 
 		movzx	edx, byte [bsSecPerClust]
-                dec     dl              ; spc - 1
-                inc     dx              ; spc
 		push	edx
 		mul	edx
 		pop	edx
@@ -421,7 +397,6 @@ msg_BootError	db "No "
 		; currently, only "kernel.sys not found" gives a message,
 		; but read errors in data or root or fat sectors do not.
 
-	magicoffset "kernel name", 1F1h
 filename	db "KERNEL  SYS"
 
 sign		dw 0, 0xAA55

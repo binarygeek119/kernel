@@ -31,9 +31,11 @@
 #ifdef MAIN
 #ifdef VERSION_STRINGS
 static char *portab_hRcsId =
-    "$Id: portab.h 1121 2005-03-15 15:25:08Z perditionc $";
+    "$Id$";
 #endif
 #endif
+
+#include <limits.h>
 
 /****************************************************************/
 /*                                                              */
@@ -64,6 +66,14 @@ static char *portab_hRcsId =
 #define I86
 #define CDECL   cdecl
 #if __TURBOC__ > 0x202
+#if __TURBOC__ < 0x400 /* targeted to TC++ 1.0 which is 0x297 (3.1 is 0x410) */
+#pragma warn -pia /* possibly incorrect assignment */
+#pragma warn -sus /* suspicious pointer conversion */
+/*
+ * NOTE: The above enable TC++ to build the kernel, but it's not recommended
+ * for development. Use [Open]Watcom (the best!) or newer Borland compilers!
+ */
+#endif
 /* printf callers do the right thing for tc++ 1.01 but not tc 2.01 */
 #define VA_CDECL
 #else
@@ -73,8 +83,9 @@ static char *portab_hRcsId =
 void __int__(int);
 #ifndef FORSYS
 void __emit__(char, ...);
-#define disable() __emit__(0xfa)
-#define enable() __emit__(0xfb)
+#define disable() __emit__(0xfa)  /* cli; disable interrupts   */
+#define enable()  __emit__(0xfb)  /* sti; enable interrupts    */
+#define halt()    __emit__(0xf4)  /* hlt; halt until interrupt */
 #endif
 
 #elif defined	(_MSC_VER)
@@ -89,6 +100,7 @@ void __emit__(char, ...);
 #define __int__(intno) asm int intno;
 #define disable() asm cli
 #define enable() asm sti
+#define halt() asm hlt
 #define _CS getCS()
 static unsigned short __inline getCS(void)
 {
@@ -100,19 +112,16 @@ static unsigned short __inline getSS(void)
   asm mov ax, ss;
 }
 
-#elif defined(__WATCOMC__) && defined(BUILD_UTILS)
-  /* workaround for building some utils with OpenWatcom (owcc) */
-#define MC68K
 #elif defined(__WATCOMC__)      /* don't know a better way */
 
-#if defined(_M_I86)
 #define I86
-#endif
 #define __int__(intno) asm int intno;
 void disable(void);
 #pragma aux disable = "cli" modify exact [];
 void enable(void);
 #pragma aux enable = "sti" modify exact [];
+void halt(void);
+#pragma aux halt = "hlt" modify exact [];
 #define asm __asm
 #define far __far
 #define CDECL   __cdecl
@@ -124,17 +133,15 @@ unsigned short getCS(void);
 #define _SS getSS()
 unsigned short getSS(void);
 #pragma aux getSS = "mov dx,ss" value [dx] modify exact[dx];
-#if !defined(FORSYS) && !defined(EXEFLAT) && _M_IX86 >= 300
-#pragma aux default parm [ax dx cx] modify [ax dx es fs] /* min.unpacked size */
-#endif
-
 /* enable Possible loss of precision warning for compatibility with Borland */
 #pragma enable_message(130)
+#if !defined(FORSYS) && !defined(EXEFLAT) && _M_IX86 >= 300
+#pragma aux default parm [ax dx cx] modify [ax dx es fs] /* min.unpacked size */
+/* #pragma aux default parm [ax dx] modify [ax bx cx dx es fs]min.packed size */
+#endif
 
 #if _M_IX86 >= 300 || defined(M_I386)
-#ifndef I386
 #define I386
-#endif
 #endif
 
 #elif defined (_MYMC68K_COMILER_)
@@ -142,44 +149,8 @@ unsigned short getSS(void);
 #define MC68K
 
 #elif defined(__GNUC__)
-
-#ifdef __FAR
-#define I86
-#define STRINGIFY(x) #x
-#define __int__(intno) asm volatile(STRINGIFY(int $##intno))
-static inline void disable(void)
-{
-  asm volatile("cli");
-}
-static inline void enable(void)
-{
-  asm volatile("sti");
-}
-#define far __far
-#define CDECL __attribute__((cdecl))
-#define VA_CDECL
-#define PASCAL
-
-#define _CS getCS()
-static inline unsigned short getCS(void)
-{
-  unsigned short ret;
-  asm volatile("mov %%cs, %0" : "=r"(ret));
-  return ret;
-}
-
-#define _SS getSS()
-static inline unsigned short getSS(void)
-{
-  unsigned short ret;
-  asm volatile("mov %%ss, %0" : "=r"(ret));
-  return ret;
-}
-extern char DosDataSeg[];
-#else
 /* for warnings only ! */
 #define MC68K
-#endif
 
 #else
 #error Unknown compiler
@@ -188,13 +159,9 @@ We might even deal with a pre-ANSI compiler. This will certainly not compile.
 
 #ifdef I86
 #if _M_IX86 >= 300 || defined(M_I386)
-#ifndef I386
 #define I386
-#endif
 #elif _M_IX86 >= 100 || defined(M_I286)
-#ifndef I186
 #define I186
-#endif
 #endif
 #endif
 
@@ -217,12 +184,10 @@ We might even deal with a pre-ANSI compiler. This will certainly not compile.
 typedef __SIZE_TYPE__  size_t;
 #else
 #define CONST
-#if !(defined(_SIZE_T) || defined(_SIZE_T_DEFINED) || defined(__SIZE_T_DEFINED))
 typedef unsigned       size_t;
 #endif
 #endif
-#endif
-#if defined(I86) && !defined(MC68K)
+#ifdef I86
 #define VOID           void
 #define FAR            far      /* segment architecture */
 #define NEAR           near     /*    "          "      */
@@ -239,16 +204,7 @@ typedef unsigned       size_t;
               as 'ASMCFUNC', and is (and will be ?-) cdecl */
 #define ASMCFUNC CDECL
 #define ASMPASCAL PASCAL
-#if defined(__GNUC__)
-#define ASM
-#else
 #define ASM ASMCFUNC
-#endif
-
-/* variables that can be near or far: redefined in init-dat.h */
-#define DOSFAR
-#define DOSTEXTFAR
-
 /*                                                              */
 /* Boolean type & definitions of TRUE and FALSE boolean values  */
 /*                                                              */
@@ -300,7 +256,7 @@ typedef unsigned short CLUSTER;
 #endif
 typedef unsigned short UNICODE;
 
-#if defined(STATICS) || defined(__WATCOMC__) || defined(__GNUC__)
+#if defined(STATICS) || defined(__WATCOMC__)
 #define STATIC static		 /* local calls inside module */
 #else
 #define STATIC
@@ -318,6 +274,19 @@ typedef signed long LONG;
 #define LONG long
 #endif
 
+typedef UWORD ofs_t;
+typedef UWORD seg_t;
+
+#define lonibble(v) (0x0f & (v))
+#define hinibble(v) (0xf0 & (v))
+
+#if CHAR_BIT == 8
+# define lobyte(v) ((UBYTE)(v))
+#else
+# define lobyte(v) ((UBYTE)(0xff & (v)))
+#endif
+#define hibyte(v) lobyte ((UWORD)(v) >> 8u)
+
 #if USHRT_MAX == 0xFFFF
 # define loword(v) ((unsigned short)(v))
 #else
@@ -332,49 +301,41 @@ typedef signed long LONG;
 #ifdef I86
 #ifndef MK_FP
 
-#if defined(__WATCOMC__)
+#if defined __WATCOMC__
 #define MK_FP(seg,ofs) 	      (((UWORD)(seg)):>((VOID *)(ofs)))
-#elif defined(__TURBOC__) && (__TURBOC__ > 0x202)
+#elif __TURBOC__ > 0x202
 #define MK_FP(seg,ofs)        ((void _seg *)(seg) + (void near *)(ofs))
 #else
-#define MK_FP(seg,ofs)        ((void FAR *)(((ULONG)(seg)<<16)|(UWORD)(ofs)))
+#define MK_FP(seg,ofs)        ((void FAR *)MK_ULONG(seg, ofs))
 #endif
 
-#define pokeb(seg, ofs, b) (*((unsigned char far *)MK_FP(seg,ofs)) = b)
-#define poke(seg, ofs, w) (*((unsigned far *)MK_FP(seg,ofs)) = w)
+#define pokeb(seg, ofs, b) (*(unsigned char far *)MK_FP(seg,ofs) = (b))
+#define poke(seg, ofs, w) (*(unsigned far *)MK_FP(seg,ofs) = (w))
 #define pokew poke
-#define pokel(seg, ofs, l) (*((unsigned long far *)MK_FP(seg,ofs)) = l)
-#define peekb(seg, ofs) (*((unsigned char far *)MK_FP(seg,ofs)))
-#define peek(seg, ofs) (*((unsigned far *)MK_FP(seg,ofs)))
+#define pokel(seg, ofs, l) (*(unsigned long far *)MK_FP(seg,ofs) = (l))
+#define peekb(seg, ofs) (*(unsigned char far *)MK_FP(seg,ofs))
+#define peek(seg, ofs) (*(unsigned far *)MK_FP(seg,ofs))
 #define peekw peek
-#define peekl(seg, ofs) (*((unsigned long far *)MK_FP(seg,ofs)))
+#define peekl(seg, ofs) (*(unsigned long far *)MK_FP(seg,ofs))
 
-#if defined(__TURBOC__) && (__TURBOC__ > 0x202)
+#if __TURBOC__ > 0x202
 #define FP_SEG(fp)            ((unsigned)(void _seg *)(void far *)(fp))
 #else
-#define FP_SEG(fp)            ((unsigned)((ULONG)(VOID FAR *)(fp)>>16))
+#define FP_SEG(fp)            hiword ((ULONG)(VOID FAR *)(fp))
 #endif
 
-#if defined(__GNUC__) && defined(__BUILTIN_IA16_FP_OFF)
-#define FP_OFF(fp)            __builtin_ia16_FP_OFF(fp)
-#else
-#define FP_OFF(fp)            ((unsigned)(fp))
-#endif
+#define FP_OFF(fp)            loword (fp)
 
 #endif
 #endif
 
 #ifdef MC68K
-#define MK_FP(seg,ofs)         ((VOID *)(&(((BYTE *)(size_t)(seg))[(ofs)])))
-#define FP_SEG(fp)             (0)
+#define MK_FP(seg,ofs)         ((VOID *)&(((BYTE *)(size_t)(seg))[ofs]))
+#define FP_SEG(fp)             0
 #define FP_OFF(fp)             ((size_t)(fp))
 #endif
 
-#if defined(__GNUC__) && defined(__FAR)
-typedef VOID FAR *intvec;
-#else
 typedef VOID (FAR ASMCFUNC * intvec) (void);
-#endif
 
 #define MK_PTR(type,seg,ofs) ((type FAR*) MK_FP (seg, ofs))
 #if __TURBOC__ > 0x202
@@ -389,10 +350,29 @@ typedef VOID (FAR ASMCFUNC * intvec) (void);
 	unreferenced parameter 'x'
 	and (hopefully) generates no code
 */
-#define UNREFERENCED_PARAMETER(x) (void)x;
+#define UNREFERENCED_PARAMETER(x) (void)(x)
 
 #ifdef I86                      /* commandline overflow - removing /DPROTO TE */
 #define PROTO
 #endif
 
-#define LENGTH(x) (sizeof(x)/sizeof(x[0]))
+typedef const char	CStr[], *PCStr;
+typedef char		Str[], *PStr;
+typedef const void	*CVP;
+typedef const void FAR	*CVFP;
+typedef void FAR	*VFP;
+
+#define LENGTH(x) (sizeof (x)/sizeof *(x))
+#define ENDOF(x) ((x) + LENGTH (x))
+
+/* (unsigned) modulo arithmetics trick: a<=b<=c equal to b-a<=c-a */
+#define inrange(type,v,lo,hi) ((type)((v) - (lo)) <= (type)((hi) - (lo)))
+#define _isdigit(c) inrange(UBYTE, c, '0', '9')
+#define _islower(c) inrange(UBYTE, c, 'a', 'z')
+#define _isupper(c) inrange(UBYTE, c, 'A', 'Z')
+
+/* Fast ASCII tolower/toupper */
+#define _fast_lower(ch)		((ch) | 0x20)
+#define _fast_dolower(var)	((var) |= 0x20)
+#define _fast_upper(ch)		((ch) & ~0x20)
+#define _fast_doupper(var)	((var) &= ~0x20)

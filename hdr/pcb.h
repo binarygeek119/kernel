@@ -52,7 +52,7 @@
 #ifdef MAIN
 #ifdef VERSION_STRINGS
 static BYTE *pcb_hRcsId =
-    "$Id: pcb.h 1316 2007-05-15 17:48:47Z bartoldeman $";
+    "$Id$";
 #endif
 #endif
 
@@ -86,6 +86,14 @@ typedef struct {
   xreg a, b, c, d;
   UWORD si, di, ds, es;
 } lregs;
+
+   /* Registers directly passed to syscall;
+      must be the same order as iregs!
+      Is used to define parameters. */
+#define DIRECT_IREGS   \
+   xreg a, xreg b, xreg c, xreg d, \
+   UWORD si, UWORD di, UWORD bp, UWORD ds, UWORD es,   \
+   UWORD ip, UWORD cs, UWORD flags
 
 /* Process control block for task switching                             */
 typedef struct {
@@ -159,6 +167,14 @@ typedef struct {
 
    /* Allow default alignment from now on */
 #include <algndflt.h>
+
+/*
+ * Invoke interrupt "intnr" with all registers from *pr loaded
+ * into the processor registers (except: SS, SP,& flags)
+ * On return, all processor registers are stored into *pr (including
+ * flags).
+ */
+void ASMCFUNC intr(int intnr, iregs * const pr);
 
 #endif
 

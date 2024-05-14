@@ -25,16 +25,16 @@
 ; write to the Free Software Foundation, 675 Mass Ave,
 ; Cambridge, MA 02139, USA.
 ;
-; $Id: procsupt.asm 1591 2011-05-06 01:46:55Z bartoldeman $
+; $Id$
 ;
 
 
 		%include "segs.inc"
 
-                extern  _user_r
+                extern  _user_r:wrt DGROUP
 
-                extern  _break_flg     ; break detected flag
-                extern  _int21_handler ; far call system services
+                extern  _break_flg:wrt DGROUP   ; break detected flag
+                extern  _int21_handler:wrt DGROUP ; far call system services
 
                 %include "stacks.inc"
 
@@ -47,34 +47,27 @@ segment HMA_TEXT
 ;
 ;       void exec_user(iregs far *irp, int disable_a20)
 ;
-                global  _exec_user
+		global  _exec_user
 _exec_user:
-
-;                PUSH$ALL
-;                mov     ds,[_DGROUP_]
-;                cld
-;
-;
-;
-                pop     ax		      ; return address (unused)
-
-                pop     bp		      ; irp (user ss:sp)
-                pop	si
+%ifndef WATCOM
+; exec_user declared with attribute `aborts'
+		pop	ax		; return address (unused)
+%endif
+                pop     ax		      ; irp (user ss:sp)
+                pop	dx
 		pop	cx		      ; disable A20?
-		or	cx,cx
-		jz	do_iret
-
                 cli
-                mov     ss,si
-                mov     sp,bp                   ; set-up user stack
+                mov     ss,dx
+                mov     sp,ax                   ; set-up user stack
                 sti
 ;
+		or	cx,cx
                 POP$ALL
+		jz      do_iret
                 extern _ExecUserDisableA20
-                jmp DGROUP:_ExecUserDisableA20
+                jmp far _ExecUserDisableA20
 do_iret:
-                extern _int21_iret
-                jmp _int21_iret
+		iret
 
 segment _LOWTEXT
 
@@ -130,7 +123,6 @@ _spawn_int23:
 
 ;; 1999/03/27 ska - comments: see cmt1.txt
 		mov ds, [cs:_DGROUP_]		;; Make sure DS is OK
-		mov bp, [_user_r]
 
                 ; restore to user stack
                 cli					;; Pre-8086 don't disable INT autom.
@@ -147,12 +139,11 @@ _spawn_int23:
 ;      this patch helps FreeDos to survive CtrlC,
 ;      but should clearly be done somehow else.
                 mov     ss, [_user_r+2]
-                RestoreSP
+                mov     sp, [_user_r]
 
                 sti
 
                 ; get all the user registers back
-                Restore386Registers
                 POP$ALL
 
                 ;; Construct the piece of code into the stack
@@ -263,7 +254,7 @@ _spawn_int23:
 
 ??int23_respawn:
 				pop bp					;; Restore the original register
-                jmp 	DGROUP:_int21_handler
+                jmp 	far _int21_handler
 
 ;
 ; interrupt enable and disable routines
@@ -284,10 +275,13 @@ _spawn_int23:
 
 ; prepare to call process 0 (the shell) from P_0() in C
 
-    global reloc_call_p_0
+	global reloc_call_p_0
 reloc_call_p_0:
+%ifndef WATCOM
+; reloc_call_p_0 declared with attribute `aborts'
         pop ax          ; return address (32-bit, unused)
         pop ax
+%endif
         pop ax          ; fetch parameter 0 (32-bit) from the old stack
         pop dx
         mov ds,[cs:_DGROUP_]
@@ -297,4 +291,9 @@ reloc_call_p_0:
         sti
         push dx         ; pass parameter 0 onto the new stack
         push ax
-        call _P_0       ; no return, allow parameter fetch from C
+%ifndef WATCOM
+	call	_P_0	; no return, allow parameter fetch from C
+%else
+; P_0 declared with attribute `aborts'
+	jmp	_P_0	; no return, allow parameter fetch from C
+%endif

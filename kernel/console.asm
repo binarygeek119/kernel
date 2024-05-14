@@ -161,8 +161,6 @@ CommonNdRdExit:		; *** tell if key waiting and return its ASCII if yes
 		add     ah,[cs:_kbdType]
                 int     16h                     ; Get status, if zf=0  al=char
                 jz      ConNdRd4                ; Jump if no char available
-                or      ax,ax                   ; Also check for ax=0 as apparently some
-                jz      ConNdRd4                ; int16h handlers set ax=0 to indicate unsupported function
 		call	checke0			; check for e0 scancode
                 or      ax,ax                   ; Zero ?
                 jnz     ConNdRd1                ; Jump if not zero
@@ -265,14 +263,9 @@ _int29_handler:
                 pop     ax
                 iret
 %IFDEF DEBUG_PRINT_COMPORT
-%ifnum DEBUG_PRINT_COMPORT
-%define DEBUG_USE_COMPORT DEBUG_PRINT_COMPORT
-%else
-%define DEBUG_USE_COMPORT 1                    ; default to COM2 if not specified
-%endif
 .comprint:
                 push    dx
-                mov     dx, DEBUG_USE_COMPORT  ; 0=COM1,1=COM2,2=COM3,3=COM4
+                mov     dx, 1                   ; 0=COM1,1=COM2,2=COM3,3=COM4
 
                 mov     ah, [cs:ASYNC_NEED_INIT]
                 or      ah,ah

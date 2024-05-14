@@ -11,7 +11,7 @@
 
 #ifdef VERSION_STRINGS
 static BYTE *lfnaidRcsId =
-    "$Id: lfnapi.c 1389 2009-05-20 18:13:37Z bartoldeman $";
+    "$Id$";
 #endif
 
 #ifdef WITHLFNAPI
@@ -50,7 +50,7 @@ VOID unicode_to_lfn(UNICODE FAR **name, struct lfn_entry FAR *lep);
  */
 COUNT lfn_allocate_inode(VOID)
 {
-  f_node_ptr fnp = get_f_node(&fnode[0]);
+  f_node_ptr fnp = get_f_node();
   struct dpb FAR *dpbp;
   COUNT handle;
   if (fnp == 0) return LHE_NOFREEHNDL;
@@ -105,7 +105,7 @@ COUNT lfn_free_inode(COUNT handle)
  * Return value.
  *  SUCCESS, LHE_INVLDHNDL
  */
-COUNT lfn_setup_inode(COUNT handle, ULONG dirstart, ULONG diroff)
+COUNT lfn_setup_inode(COUNT handle, ULONG dirstart, UWORD diroff)
 {
   f_node_ptr fnp = xlt_fd(handle);
   if (fnp == 0 || fnp->f_count <= 0) return LHE_INVLDHNDL;

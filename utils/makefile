@@ -1,25 +1,20 @@
 !include "../mkfiles/generic.mak"
 
-CFLAGS = -I..$(DIRSEP)hdr
+DEPENDS=$(DEPENDS) *.cfg
+CFLAGSC=$(CFLAGSC) -DEXEFLAT
 
-production: patchobj.com exeflat.exe upxentry.bin upxdevic.bin
+########################################################################
 
-patchobj.com: patchobj.c
-	$(CLT) $(CFLAGS) patchobj.c
+all:		patchobj.com exeflat.exe
 
-upxentry.bin: upxentry.asm
-	$(NASM) -f bin upxentry.asm -o upxentry.bin
+patchobj.com:	patchobj.c $(DEPENDS)
 
-upxdevic.bin: upxdevic.asm
-	$(NASM) -f bin upxdevic.asm -o upxdevic.bin
+exeflat.exe:	exeflat.c ../hdr/exe.h $(DEPENDS)
 
-exeflat.exe: exeflat.c ../hdr/exe.h
-	$(CLC) $(CFLAGS) exeflat.c
-
-
-clobber: clean
+########################################################################
 
 clean:
-	$(RM) *.obj *.bak *.crf *.xrf *.map *.lst *.las *.cod *.err status.me
-	$(RM) exeflat.exe patchobj.com upxentry.bin upxdevic.bin
+		-$(RM) *.bak *.cod *.crf *.err *.las *.lst *.map *.obj *.xrf
 
+clobber:	clean
+		-$(RM) patchobj.com exeflat.exe status.me

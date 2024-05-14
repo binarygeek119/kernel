@@ -29,17 +29,16 @@
 
 struct config {     /* Configuration variables */
   UBYTE cfgDosDataUmb;
-  BYTE cfgBuffers;           /* number of buffers in the system */
+  BYTE  cfgBuffers;          /* number of buffers in the system */
   UBYTE cfgFiles;            /* number of available files */
   UBYTE cfgFilesHigh;
   UBYTE cfgFcbs;             /* number of available FCBs */
   UBYTE cfgProtFcbs;         /* number of protected FCBs */
-  BYTE *cfgInit;             /* init of command.com */
-  BYTE *cfgInitTail;         /* command.com's tail */
+  char  cfgShell[256];       /* SHELL= line */
   UBYTE cfgLastdrive;        /* last drive */
   UBYTE cfgLastdriveHigh;
-  BYTE cfgStacks;            /* number of stacks */
-  BYTE cfgStacksHigh;
+  BYTE  cfgStacks;           /* number of stacks */
+  BYTE  cfgStacksHigh;
   UWORD cfgStackSize;        /* stacks size for each stack */
   UBYTE cfgP_0_startmode;    /* load command.com high or not */
   unsigned ebda2move;        /* value for switches=/E:nnnn */

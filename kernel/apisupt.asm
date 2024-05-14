@@ -24,7 +24,7 @@
 ; write to the Free Software Foundation, 675 Mass Ave,
 ; Cambridge, MA 02139, USA.
 ;
-; $Id: apisupt.asm 538 2003-03-12 22:43:53Z bartoldeman $
+; $Id$
 ;
 
 		%include "segs.inc"

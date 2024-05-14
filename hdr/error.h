@@ -31,7 +31,7 @@
 #ifdef MAIN
 #ifdef VERSION_STRINGS
 static BYTE *error_hRcsId =
-    "$Id: error.h 485 2002-12-09 00:17:15Z bartoldeman $";
+    "$Id$";
 #endif
 #endif
 
