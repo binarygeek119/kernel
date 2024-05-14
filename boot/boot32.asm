@@ -1,33 +1,36 @@
-;	+--------+
-;	|        |
-;	|        |
-;	|--------| 4000:0000
-;	|        |
-;	|  FAT   |
-;	|        |
-;	|--------| 2000:0000
-;	|BOOT SEC|
-;	|RELOCATE|
-;	|--------| 1FE0:0000
-;	|        |
-;	|        |
-;	|        |
-;	|        |
-;	|--------|
-;	|BOOT SEC|
-;	|ORIGIN  | 07C0:0000
-;	|--------|
-;	|        |
-;	|        |
-;	|        |
-;	|--------|
-;	|KERNEL  |
-;	|LOADED  |
-;	|--------| 0060:0000
-;	|        |
-;	+--------+
+
+; Memory layout for the FreeDOS FAT32 single stage boot process:
+;
+;	...
+;	|-------| 1FE0h:7E00h = 27C00h (159 KiB)
+;	|BOOTSEC| loader relocates itself here first thing,
+;	|RELOC.	|  before loading root directory/FAT/kernel file
+;	|-------| 1FE0h:7C00h = 27A00h (158 KiB)
+;	| STACK | below relocated loader, above FAT sector (size 22 KiB)
+;	...
+;	|-------| 2200h:2000h = 24000h (144 KiB)
+;	|  FAT  | (only 1 sector buffered, maximum sector size 8 KiB)
+;	|-------| 2200h:0000h = 22000h (136 KiB)
+;	...
+;	|-------| 0000h:7E00h = 07E00h (31.5 KiB)
+;	|BOOTSEC| overwritten by the kernel, so the
+;	|ORIGIN | bootsector relocates itself up...
+;	|-------| 0000h:7C00h = 07C00h (31 KiB)
+;	...
+;	|-------|
+;	|KERNEL	| maximum size 128 KiB (overwrites bootsec origin)
+;	|LOADED	| (holds 1 sector directory buffer before kernel file load)
+;	|-------| 0060h:0000h = 00600h (1.5 KiB)
+;	...
+; The kernel load segment may be patched using the SYS /L switch.
+;  We support values between 0x60 and 0x200 here, with file size
+;  of up to 128 KiB (rounded to cluster size). Default is 0x60.
 
 ;%define MULTI_SEC_READ  1
+
+                ; NOTE: sys must be updated if magic offsets change
+%assign ISFAT1216DUAL 0
+	%include "magic.mac"
 
 
 segment	.text
@@ -57,11 +60,16 @@ Entry:          jmp     short real_start
 %define xrootClst       bp+0x2c      ; Starting cluster of root directory
 %define drive           bp+0x40      ; Drive number
 
-		times	0x5a-$+$$ db 0
+		times   52h - ($ - $$) db 0
+		; The filesystem ID is used by lDOS's instsect (by ecm)
+		;  by default to validate that the filesystem matches.
+		db "FAT32"
+		times   5Ah - ($ - $$) db 32
+
 
 %define LOADSEG         0x0060
 
-%define FATSEG          0x2000         
+%define FATSEG          0x2200
 
 %define fat_sector      bp+0x48         ; last accessed sector of the FAT
 
@@ -92,12 +100,14 @@ real_start:     cld
 		jmp     word 0x1FE0:cont
 
 loadseg_off	dw	0
+	magicoffset "loadseg", 78h
 loadseg_seg	dw	LOADSEG
 
 cont:           mov     ds, ax
                 mov     ss, ax
                 lea     sp, [bp-0x20]
 		sti
+	magicoffset "set unit", 82h
                 mov     [drive], dl     ; BIOS passes drive number in DL
 
 ;                call    print
@@ -139,7 +149,7 @@ secshift:	inc	ax
 		shr	cx, 1
 		cmp	cx, 1
 		jne	secshift
-		mov	byte [fat_secshift], al
+		mov	word [fat_secshift], ax
 		dec	cx
  
 ;       FINDFILE: Searches for the file in the root directory.
@@ -211,6 +221,10 @@ c6:
                 jmp     short c5
                 
 boot_error:
+		mov ax, 0E00h | '!'
+		int 10h				; display the error sign
+		mov al, 07h
+		int 10h				; beep
 		xor	ah,ah
 		int	0x16			; wait for a key
 		int	0x19			; reboot the machine
@@ -231,8 +245,7 @@ next_cluster:
 cn_loop:
                 shr     dx,1
                 rcr     ax,1
-                dec     cx
-                jnz     cn_loop                ; DX:AX fat sector where our
+                loop    cn_loop                ; DX:AX fat sector where our
                                                ; cluster resides
                                                ; DI - cluster index in this
                                                ; sector
@@ -264,8 +277,9 @@ cn_exit:
                 ret
 
 
-boot_success:   
-                mov     bl, [drive]
+boot_success:
+		mov dl, [drive]			; for Enhanced DR-DOS load
+		mov bl, dl			; for FreeDOS load
 		jmp	far [loadsegoff_60]
 
 ; Convert cluster to the absolute sector
@@ -289,7 +303,9 @@ c3:
                 sub     ax, 2
                 sbb     cx, byte 0           ; CX:AX == cluster - 2
                 mov     bl, [bsSecPerClust]
-                sub     bh, bh
+                dec     bx              ; bl = spc - 1, 0FFh if 256 spc
+                sub     bh, bh          ; bx = spc - 1
+                inc     bx              ; bx = spc
                 xchg    cx, ax          ; AX:CX == cluster - 2
                 mul     bx              ; first handle high word
                                         ; DX must be 0 here
@@ -300,6 +316,7 @@ c3:
                 adc     dx, [data_start + 2]
                 ret
 
+%if 0
 ; prints text after call to this function.
 
 print_1char:        
@@ -312,7 +329,8 @@ print1:         lodsb                          ; get token
                 cmp   al, 0                    ; end of string?
                 jne   print_1char              ; until done
                 ret                            ; and jump to it
-                
+%endif
+
 ;input:
 ;   DX:AX - 32-bit DOS sector number
 ;   ES:BX - destination buffer
@@ -381,12 +399,15 @@ read_ok:
                 mov     es, cx
 
 no_incr_es:
-                add     ax,byte 1
-                adc     dx,byte 0
+		inc ax
+		jnz .no_carry
+		inc dx
+.no_carry:
                 ret
 
        times   0x01f1-$+$$ db 0
 
+	magicoffset "kernel name", 1F1h
 filename        db      "KERNEL  SYS",0,0
 
 sign            dw      0xAA55

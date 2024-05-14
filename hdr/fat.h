@@ -31,7 +31,7 @@
 #ifdef MAIN
 #ifdef VERSION_STRINGS
 static BYTE *fat_hRcsId =
-    "$Id$";
+    "$Id: fat.h 1448 2009-06-16 21:45:17Z bartoldeman $";
 #endif
 #endif
 
@@ -131,20 +131,18 @@ struct lfn_entry {
 struct dpb;
 CLUSTER getdstart(struct dpb FAR *dpbp, struct dirent *dentry);
 void setdstart(struct dpb FAR *dpbp, struct dirent *dentry, CLUSTER value);
-BOOL checkdstart(struct dpb FAR *dpbp, struct dirent *dentry, CLUSTER value);
 #else
 #define getdstart(dpbp, dentry) \
   ((dentry)->dir_start)
 #define setdstart(dpbp, dentry, value) \
   (((dentry)->dir_start) = (UWORD)(value))
-#define checkdstart(dpbp, dentry, value) \
-  (((dentry)->dir_start) == (UWORD)(value))
 #endif
 
 #define DIR_NAME        0
 #define DIR_EXT         FNAME_SIZE
 #define DIR_ATTRIB      (FNAME_SIZE+FEXT_SIZE)
 #define DIR_RESERVED    (FNAME_SIZE+FEXT_SIZE+1)
+#define DIR_START_HIGH  (FNAME_SIZE+FEXT_SIZE+9)
 #define DIR_TIME        (FNAME_SIZE+FEXT_SIZE+11)
 #define DIR_DATE        (FNAME_SIZE+FEXT_SIZE+13)
 #define DIR_START       (FNAME_SIZE+FEXT_SIZE+15)

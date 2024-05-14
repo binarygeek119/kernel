@@ -1,26 +1,24 @@
 #
 # makefile for libm.lib
 #
-# $Id$
+# $Id: makefile 688 2003-09-15 10:46:24Z bartoldeman $
 #
+
 
 !include "../mkfiles/generic.mak"
 
-########################################################################
 
-all:		libm.lib
+libm.lib:	$(CLIB)
+	-$(RM) libm.lib
+	$(LIBUTIL) $(CLIB) $(MATH_EXTRACT) $(LIBTERM)
+	$(COMSPEC) /c for %i in (*.obj) do ..\utils\patchobj CODE=LCODE %i
+	$(LIBUTIL) libm $(MATH_INSERT)     $(LIBTERM)
+	-$(RM) *.OBJ
 
-libm.lib:	$(CLIB) $(DEPENDS)
-		-$(RM) $*.lib
-		$(LIBUTIL) $(CLIB) $(MATH_EXTRACT)$(LIBTERM)
-		$(COMSPEC) /c for %i in (*.obj) do ..\utils\patchobj CODE=LCODE %i
-		$(LIBUTIL) $* $(MATH_INSERT)$(LIBTERM)
-		-$(RM) *.obj
 
-########################################################################
+clobber:        clean
+	-$(RM) status.me
 
 clean:
-		-$(RM) *.bak *.cod *.crf *.err *.las *.lst *.map *.obj *.xrf
+	-$(RM) *.obj *.bak libm.lib
 
-clobber:	clean
-		-$(RM) libm.lib status.me

@@ -26,8 +26,7 @@
 /* Boston, MA  02111-1307  USA.                                 */
 /****************************************************************/
 
-#ifndef __LOL_H
-#define __LOL_H
+enum {LOC_CONV=0, LOC_HMA=1};
 
 /* note: we start at DOSDS:0, but the "official" list of lists starts a
    little later at DOSDS:26 (this is what is returned by int21/ah=52) */
@@ -40,7 +39,7 @@ struct lol {
   struct sfttbl far *sfthead;  /*  4 System File Table head               */
   struct dhdr far *clock;      /*  8 CLOCK$ device                        */
   struct dhdr far *syscon;     /*  c console device                       */
-  unsigned short maxsecbytes;  /* 10 max bytes per sector for any blkdev  */
+  unsigned short maxsecsize;   /* 10 max bytes per sector for any blkdev  */
   void far *inforecptr;        /* 12 pointer to disk buffer info record   */
   struct cds far *CDSp;        /* 16 Current Directory Structure          */
   struct sfttbl far *FCBp;     /* 1a FCB table pointer                    */
@@ -56,7 +55,7 @@ struct lol {
   unsigned short nbuffers;     /* 3f Number of buffers                    */
   unsigned short nlookahead;   /* 41 Number of lookahead buffers          */
   unsigned char BootDrive;     /* 43 bootdrive (1=A:)                     */
-  unsigned char dwordmoves;    /* 44 use dword moves (unused)             */
+  unsigned char cpu;           /* 44 CPU family [was unused dword moves]  */
   unsigned short xmssize;      /* 45 extended memory size in KB           */ 
   struct buffer far *firstbuf; /* 47 head of buffers linked list          */
   unsigned short dirtybuf;     /* 4b number of dirty buffers              */
@@ -74,17 +73,15 @@ struct lol {
   unsigned short min_pars;     /* 64 minimum para req by program execed   */
   unsigned short uppermem_root;/* 66 Start of umb chain (usually 9fff)    */
   unsigned short last_para;    /* 68 para: start scanning during memalloc */
+  /* ANY ITEM BELOW THIS POINT MAY CHANGE */
   /* FreeDOS specific entries */
   unsigned char os_setver_minor;/*6a settable minor DOS version           */
   unsigned char os_setver_major;/*6b settable major DOS version           */
   unsigned char os_minor;      /* 6c minor DOS version                    */
   unsigned char os_major;      /* 6d major DOS version                    */
-  unsigned char rev_number;    /* 6e minor DOS version                    */
+  unsigned char rev_number;    /* 6e DOS revision#, only 3 bits           */
   unsigned char version_flags; /* 6f DOS version flags                    */
-  struct f_node FAR *f_nodes;  /* 70 pointer to the array                 */
-  unsigned short f_nodes_cnt;  /* 74 number of allocated f_nodes          */
-  char *os_release;            /* 76 near pointer to os_release string    */
-  /* ANY ITEM BELOW THIS POINT MAY CHANGE */
+  char *os_release;            /* 70 near pointer to os_release string    */
 #ifdef WIN31SUPPORT
   unsigned short winInstanced; /* WinInit called                          */
   unsigned long  winStartupInfo[4];
@@ -92,4 +89,3 @@ struct lol {
 #endif
 };
 
-#endif /* __LOL_H */

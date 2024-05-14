@@ -14,9 +14,16 @@ struct WinStartupInfo
   ULONG next;    /* far pointer to next WinStartupInfo structure or NULL */
   ULONG vddName; /* far pointer to ASCIIZ pathname of virtual device driver */
   ULONG vddInfo; /* far pointer to vdd reference data or NULL if vddName=NULL */
-  ULONG instanceTable; /* far pointer to array of instance data */
+  ULONG instanceTable;    /* far pointer to array of instance data */
+  ULONG optInstanceTable; /* used only if winver set to 0x400 (w95)*/
 };
 extern struct WinStartupInfo winStartupInfo;
+#if defined __GNUC__
+extern UWORD winseg1, winseg2, winseg3;
+extern UBYTE markEndInstanceData;
+extern struct lol ASM FAR DATASTART;
+#endif
+
 
 /* contains a list of offsets relative to DOS data segment of
    various internal variables.

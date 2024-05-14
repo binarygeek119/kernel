@@ -31,28 +31,20 @@
 #ifdef MAIN
 #ifdef VERSION_STRINGS
 static BYTE *dirmatch_hRcsId =
-    "$Id$";
+    "$Id: dirmatch.h 1415 2009-06-02 13:18:24Z bartoldeman $";
 #endif
 #endif
 
 typedef struct {
   UBYTE dm_drive;
   BYTE dm_name_pat[FNAME_SIZE + FEXT_SIZE];
-  BYTE dm_attr_srch;		/* !!! should be UBYTE --avb	*/
+  UBYTE dm_attr_srch;
   UWORD dm_entry;
   CLUSTER dm_dircluster;
 #ifndef WITHFAT32
   UWORD reserved;
 #endif
-
-  struct {
-    BITS f_dmod:1;              /* directory has been modified  */
-    BITS f_droot:1;             /* directory is the root        */
-    BITS f_dnew:1;              /* fnode is new and needs fill  */
-    BITS f_ddir:1;              /* fnode is assigned to dir     */
-    BITS f_filler:12;           /* filler to avoid a bad bug    */
-                                /*  (feature?) in TC 2.01       */
-  } dm_flags;                   /* file flags                   */
+  UWORD reserved2;
 
   UBYTE dm_attr_fnd;            /* found file attribute         */
   time dm_time;                 /* file time                    */

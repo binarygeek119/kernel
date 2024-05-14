@@ -31,8 +31,13 @@
 ; Bart Oldeman: optimized a bit: see /usr/include/bits/string.h from 
 ; glibc 2.2
 ;
-; $Id$
+; $Id: asmsupt.asm 1568 2011-04-09 02:42:51Z bartoldeman $
 ;
+
+; for OW on Linux:
+%ifdef owlinux
+%define WATCOM
+%endif
 
 %ifdef WATCOM
 %ifdef _INIT
@@ -43,6 +48,7 @@
 %ifndef WATCOM_INIT
 
 		%include "segs.inc"
+		%include "stacks.inc"
 
 %ifdef _INIT
 
@@ -129,9 +135,10 @@ pascal_setup:
                 cld
 
                 mov bl,6       ; majority (4) wants that
-                mov cx,[4+bp]  ; majority (8) wants that (near and far)
-                mov si,[6+bp]  ; majority (3) wants that (near)
-                mov di,[8+bp]  ; majority (3) wants that (near)
+arg arg1, arg2, arg3
+                mov cx,[.arg3] ; majority (8) wants that (near and far)
+                mov si,[.arg2] ; majority (3) wants that (near)
+                mov di,[.arg1] ; majority (3) wants that (near)
                 
                 jmp ax
 
@@ -187,14 +194,17 @@ FMEMCPYBACK:
 FMEMCPY:
                 call pascal_setup
 
+arg {d,4}, {s,4}, n
                 ; Get the repetition count, n preset above
-                ; mov     cx,[bp+4]
+%ifdef STDCALL
+                mov     cx,[.n]
+%endif
 
                 ; Get the far source pointer, s
-                lds     si,[bp+6]
+                lds     si,[.s]
 
                 ; Get the far destination pointer d
-                les     di,[bp+10]
+                les     di,[.d]
 		mov	bl,10
 
                 jmp short domemcpy
@@ -207,14 +217,17 @@ FMEMCPY:
 FMEMSET:
                 call pascal_setup
 
+arg {d,4}, ch, n
                 ; Get the repetition count, n - preset above
-                ; mov     cx,[bp+4]
+%ifdef STDCALL
+                mov     cx,[.n]
+%endif
 
                 ; Get the fill byte ch
-                mov     ax,[bp+6]
+                mov     ax,[.ch]
                 
                 ; Get the far source pointer, s
-                les     di,[bp+8]
+                les     di,[.d]
 		mov	bl,8
 
 domemset:                
@@ -235,11 +248,12 @@ domemset:
 MEMSET:
                 call pascal_setup
                 
+arg d, ch, n
                 ; Get the repitition count, n - preset above
                 ; mov     cx,[bp+4]
 
                 ; Get the char ch
-                mov     ax, [bp+6]
+                mov     ax, [.ch]
 
                 ; Get the far source pointer, d - preset above
                 ; mov      di,[bp+8]
@@ -272,21 +286,20 @@ pascal_return:
                 
 ; fstrcpy (void FAR*dest, void FAR *src);
 
-%ifndef _INIT
                 global  FSTRCPY
 FSTRCPY:
                 call pascal_setup
 
+arg {dest,4}, {src,4}
                 ; Get the source pointer, ss
-                lds   si,[bp+4]
+                lds   si,[.src]
 
                 ; and the destination pointer, d
-                les   di,[bp+8]
+                les   di,[.dest]
 
 		mov   bl,8
                 
                 jmp short dostrcpy
-%endif
 
 ;******
                 global  STRCPY
@@ -294,11 +307,13 @@ STRCPY:
                 call pascal_setup
 
 
+%ifdef PASCAL
                 ; Get the source pointer, ss
                 mov   si,[bp+4]
 
                 ; and the destination pointer, d
                 mov   di,[bp+6]
+%endif
 		mov   bl,4
 
 dostrcpy:
@@ -312,7 +327,6 @@ strcpy_loop:
 		jmp  short pascal_return
 
 ;******************************************************************                
-%ifndef _INIT                
                 global  FSTRLEN
 FSTRLEN:
                 call pascal_setup
@@ -322,14 +336,15 @@ FSTRLEN:
 		mov   bl,4
 
                 jmp short dostrlen
-%endif
 
 ;**********************************************
                 global  STRLEN
 STRLEN:
                 call pascal_setup
                 ; Get the source pointer, ss
+%ifdef PASCAL
                 mov   di,[bp+4]
+%endif
 		mov   bl,2
 
 dostrlen:           
@@ -351,8 +366,11 @@ STRCHR:
                 call pascal_setup
 
                 ; Get the source pointer, ss
-                ; mov             cx,[bp+4] - preset above
-                ; mov             si,[bp+6] - preset above
+arg src, ch
+%ifdef STDCALL	; preset above for PASCAL
+                mov             cx,[.ch]
+                mov             si,[.src]
+%endif
 		mov bl,4
 
 strchr_loop:                
@@ -383,11 +401,12 @@ strchr_found1:
 FSTRCHR:
                 call pascal_setup
 
+arg {src,4}, ch
                 ; Get ch (preset above)
                 ;mov cx, [bp+4]
                 
                 ;and the source pointer, src
-                lds si, [bp+6]
+                lds si, [.src]
 
 		;mov	bl, 6 - preset above
 
@@ -398,14 +417,17 @@ FSTRCHR:
 FMEMCHR:
                 call pascal_setup
 
+arg {src,4}, ch, n
                 ; Get the length - preset above
-                ; mov cx, [bp+4]
+%ifdef STDCALL
+                mov cx, [.n]
+%endif
 
                 ; and the search value
-                mov ax, [bp+6]
+                mov ax, [.ch]
 
                 ; and the source pointer, ss
-                les di, [bp+8]
+                les di, [.src]
 
 		mov bl, 8
 
@@ -421,19 +443,24 @@ FMEMCHR:
 FSTRCMP:
                 call pascal_setup
 
+arg {dest,4}, {src,4}
                 ; Get the source pointer, ss
-                lds             si,[bp+4]
+                lds             si,[.src]
 
                 ; and the destination pointer, d
-                les             di,[bp+8]
+                les             di,[.dest]
                 
+                mov bl,8
+
+%if 0
                 jmp short dostrcmp
 
 ;******
-                global  _strcmp
-_strcmp:
+                global STRCMP
+STRCMP:
                 call pascal_setup
 
+                mov bl,4
 
                 ; Get the source pointer, ss
                 ; mov             si,[bp+4]
@@ -443,9 +470,11 @@ _strcmp:
                 xchg si,di
 
 dostrcmp:                       
+%endif
                                     ; replace strncmp(s1,s2)-->
                                     ;         strncmp(s1,s2,0xffff)
                 mov cx,0xffff
+%if 0
                 jmp short dostrncmp
 
                 
@@ -460,6 +489,7 @@ FSTRNCMP:
                 ; and the destination pointer, d
                 les             di,[bp+8]
                 mov             cx,[bp+12]
+                mov             bl,10
                 
                 jmp short dostrncmp
 
@@ -477,6 +507,7 @@ _strncmp:
                 xchg si,di
 
 dostrncmp:
+%endif
                 jcxz strncmp_retzero
 
 strncmp_loop:                
@@ -494,14 +525,17 @@ strncmp_loop:
 FMEMCMP:
                 call pascal_setup
 
+arg {dest,4}, {src,4}, n
                 ; the length - preset above
-                ; mov cx, [bp+4]
+%ifdef STDCALL
+                mov cx, [.n]
+%endif
                 
                 ; Get the source pointer, ss
-                les di,[bp+6]
+                les di,[.src]
 
                 ; and the destination pointer, d
-                lds si,[bp+10]
+                lds si,[.dest]
 
 		mov bl,10
 

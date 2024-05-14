@@ -25,10 +25,11 @@
 ; write to the Free Software Foundation, 675 Mass Ave,
 ; Cambridge, MA 02139, USA.
 ;
-; $Id$
+; $Id: execrh.asm 1184 2006-05-20 20:49:59Z mceric $
 ;
 
                 %include "segs.inc"
+                %include "stacks.inc"
 
 segment	HMA_TEXT
                 ; EXECRH
@@ -50,25 +51,29 @@ segment	HMA_TEXT
                 push    si
                 push    ds              ; sp=bp-8
 
-                lds     si,[bp+4]       ; ds:si = device header
-                les     bx,[bp+8]       ; es:bx = request header
+arg {rhp,4}, {dhp,4}
+                lds     si,[.dhp]       ; ds:si = device header
+                les     bx,[.rhp]       ; es:bx = request header
 
 
                 mov     ax, [si+6]      ; construct strategy address
-                mov     [bp+4], ax    
+                mov     [.dhp], ax
 
                 push si                 ; the bloody fucking RTSND.DOS 
                 push di                 ; driver destroys SI,DI (tom 14.2.03)
 
-                call    far[bp+4]       ; call far the strategy
+                call    far[.dhp]       ; call far the strategy
 
                 pop di 
                 pop si
                                 
+                ; Protect386Registers	; old free-EMM386 versions destroy regs in their INIT method
 
-		mov     ax,[si+8]       ; construct 'interrupt' address
-                mov     [bp+4],ax       ; construct interrupt address 
-                call    far[bp+4]       ; call far the interrupt
+                mov     ax,[si+8]       ; construct 'interrupt' address
+                mov     [.dhp],ax       ; construct interrupt address
+                call    far[.dhp]       ; call far the interrupt
+
+                ; Restore386Registers	; less stack load and better performance...
 
                 sti                     ; damm driver turn off ints
                 cld                     ; has gone backwards

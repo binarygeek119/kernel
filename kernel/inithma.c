@@ -65,11 +65,10 @@
 
 #include "portab.h"
 #include "init-mod.h"
-#include "debug.h"
 
 #ifdef VERSION_STRINGS
 static BYTE *RcsId =
-    "$Id$";
+    "$Id: inithma.c 956 2004-05-24 17:07:04Z bartoldeman $";
 #endif
 
 BYTE DosLoadedInHMA BSS_INIT(FALSE);  /* set to TRUE if loaded HIGH          */
@@ -79,7 +78,7 @@ UWORD HMAFree BSS_INIT(0);            /* first byte in HMA not yet used      */
 STATIC void InstallVDISK(void);
 
 #ifdef DEBUG
-#ifdef __TURBOC__
+#if defined(__TURBOC__) || defined(__GNUC__)
 #define int3() __int__(3);
 #else
 void int3()
@@ -89,6 +88,12 @@ void int3()
 #endif
 #else
 #define int3()
+#endif
+
+#ifdef DEBUG
+#define HMAInitPrintf(x) printf x
+#else
+#define HMAInitPrintf(x)
 #endif
 
 #ifdef DEBUG
@@ -174,6 +179,7 @@ int MoveKernelToHMA()
     return FALSE;
 
   XMSDriverAddress = xms_addr;
+  XMS_Enable_Patch = 0x90;	/* must be set after XMSDriverAddress */
 
 #ifdef DEBUG
   /* A) for debugging purpose, suppress this, 
@@ -219,39 +225,55 @@ int MoveKernelToHMA()
 
     DosLoadedInHMA = TRUE;
   }
-  /*
-      now protect against HIMEM/FDXMS/... by simulating a VDISK
-      FDXMS should detect us and not give HMA access to ohers
-      unfortunately this also disables HIMEM completely
 
-      so: we install this after all drivers have been loaded
+  /*
+    on finalize, will install a VDISK
   */
-  {
-    static struct {               /* Boot sector of a RAM-Disk */
-      UBYTE dummy1[3];            /* HIMEM.SYS uses 3, but FDXMS uses 2 */
-      char Name[5];
-      BYTE dummy2[3];
-      WORD BpS;
-      BYTE dummy3[6];
-      WORD Sectors;
-      BYTE dummy4;
-    } VDISK_BOOT_SECTOR = {
-      {0xcf,' ',' '},
-      {"VDISK"},
-      {"   "}, 512,
-      {"FDOS  "}, 128, /* 128 * 512 = 64K */
-      ' '
-    };
-    fmemcpy(MK_FP(0xffff, 0x0010), &VDISK_BOOT_SECTOR,
-            sizeof(VDISK_BOOT_SECTOR));
-    *(WORD FAR *) MK_FP(0xffff, 0x002e) = 1024 + 64;
-  }
+
+  InstallVDISK();
 
   /* report the fact we are running high through int 21, ax=3306 */
   LoL->version_flags |= 0x10;
 
   return TRUE;
 
+}
+
+/*   
+    now protect against HIMEM/FDXMS/... by simulating a VDISK 
+    FDXMS should detect us and not give HMA access to ohers
+    unfortunately this also disables HIMEM completely
+
+    so: we install this after all drivers have been loaded
+*/
+STATIC void InstallVDISK(void)
+{
+  static struct {               /* Boot-Sektor of a RAM-Disk */
+    UBYTE dummy1[3];            /* HIMEM.SYS uses 3, but FDXMS uses 2 */
+    char Name[5];
+    BYTE dummy2[3];
+    WORD BpS;
+    BYTE dummy3[6];
+    WORD Sektoren;
+    BYTE dummy4;
+  } VDISK_BOOT_SEKTOR = {
+    {
+    0xcf, ' ', ' '},
+    {
+    'V', 'D', 'I', 'S', 'K'},
+    {
+    ' ', ' ', ' '}, 512,
+    {
+    'F', 'D', 'O', 'S', ' ', ' '}, 128, /* 128*512 = 64K */
+  ' '};
+
+  if (!DosLoadedInHMA)
+    return;
+
+  fmemcpy(MK_FP(0xffff, 0x0010), &VDISK_BOOT_SEKTOR,
+          sizeof(VDISK_BOOT_SEKTOR));
+
+  *(WORD FAR *) MK_FP(0xffff, 0x002e) = 1024 + 64;
 }
 
 /*
@@ -283,6 +305,7 @@ VOID FAR * HMAalloc(COUNT bytesToAllocate)
 
 unsigned CurrentKernelSegment = 0;
 
+/* relocate segment with HMA_TEXT code group */
 void MoveKernel(unsigned NewKernelSegment)
 {
   UBYTE FAR *HMADest;
@@ -290,11 +313,11 @@ void MoveKernel(unsigned NewKernelSegment)
   unsigned len;
   unsigned jmpseg = CurrentKernelSegment;
  
-  /* on 1st call use original link time (unrelocated) TGROUP segment */
+  /* if the first time called, initialize to end of HMA_TEXT code group segment */  
   if (CurrentKernelSegment == 0)
     CurrentKernelSegment = FP_SEG(_HMATextEnd);
 
-  /* if already relocated to HMA, then ignore move request */
+  /* if already relocated into HMA, nothing to do */
   if (CurrentKernelSegment == 0xffff)
     return;
 
@@ -304,6 +327,8 @@ void MoveKernel(unsigned NewKernelSegment)
 
   len = (FP_OFF(_HMATextEnd) | 0x000f) - (FP_OFF(_HMATextStart) & 0xfff0);
 
+  /* HMA doesn't start until a paragraph into 0xffff segment */
+  /* HMA begins with VDISK header to mark area is used */
   if (NewKernelSegment == 0xffff)
   {
     HMASource += HMAOFFSET;
@@ -333,7 +358,8 @@ void MoveKernel(unsigned NewKernelSegment)
        style table
      */
 
-    struct RelocationTable FAR *rp, rtemp;
+    struct RelocationTable FAR *rp;
+    struct RelocationTable rtemp;
 
     /* verify, that all entries are valid */
 
@@ -349,8 +375,7 @@ void MoveKernel(unsigned NewKernelSegment)
                 FP_OFF(_HMARelocationTableStart)) /
                sizeof(struct RelocationTable));
         int3();
-        for (;;)
-          ;
+        goto errorReturn;
       }
     }
 
@@ -384,5 +409,9 @@ void MoveKernel(unsigned NewKernelSegment)
   }
 
   CurrentKernelSegment = NewKernelSegment;
+  return;
+
+errorReturn:
+  for (;;) ;
 }
 

@@ -31,17 +31,17 @@
 
 #ifdef VERSION_STRING
 static BYTE *memmgrRcsId =
-    "$Id$";
+    "$Id: memmgr.c 1338 2007-07-20 20:52:33Z mceric $";
 #endif
 
 #define nxtMCBsize(mcb,size) MK_FP(FP_SEG(mcb) + (size) + 1, FP_OFF(mcb))
 #define nxtMCB(mcb) nxtMCBsize((mcb), (mcb)->m_size)
 
 #define mcbFree(mcb) ((mcb)->m_psp == FREE_PSP)
-#define mcbValid(mcb)  ( ((mcb)->m_size != 0xffff) && \
+#define mcbValid(mcb)	( ((mcb)->m_size != 0xffff) && \
         ((mcb)->m_type == MCB_NORMAL || (mcb)->m_type == MCB_LAST) )
-#define mcbFreeable(mcb)                       \
-        ((mcb)->m_type == MCB_NORMAL || (mcb)->m_type == MCB_LAST)
+#define mcbFreeable(mcb)			\
+	((mcb)->m_type == MCB_NORMAL || (mcb)->m_type == MCB_LAST)
 
 #define para2far(seg) (mcb FAR *)MK_FP((seg) , 0)
 
@@ -61,18 +61,17 @@ STATIC COUNT joinMCBs(seg para)
   while (p->m_type == MCB_NORMAL)
   {
     q = nxtMCB(p);
-    if (!mcbValid(q))
-      return DE_MCBDESTRY;
     if (!mcbFree(q))
       break;
+    if (!mcbValid(q))
+      return DE_MCBDESTRY;
     /* join both MCBs */
     p->m_type = q->m_type;      /* possibly the next MCB is the last one */
     p->m_size += q->m_size + 1; /* one for q's MCB itself */
-    q->m_type = 'K';            /* Invalidate the magic number */
-#if 0                          /* this spoils QB4's habit to double-free: */
+#if 0				/* this spoils QB4's habit to double-free: */
     q->m_type = 'K';            /* Invalidate the magic number (whole MCB) */
 #else
-    q->m_size = 0xffff;                /* mark the now unlinked MCB as "fake" */
+    q->m_size = 0xffff;		/* mark the now unlinked MCB as "fake" */
 #endif
   }
 
@@ -126,7 +125,7 @@ searchAgain:
 /*
     Hack to the Umb Region direct for now. Save time and program space.
 */
-  if (uppermem_link && uppermem_root != 0xffff)
+  if ((uppermem_link & 1) && uppermem_root != 0xffff)
   {
     COUNT tmpmode = (mode == LARGEST ? mem_access_mode : mode);
     if ((mode != LARGEST || size == 0xffff) &&
@@ -154,9 +153,9 @@ searchAgain:
         /* this block has a "match" size, try the rule set */
         switch (mode)
         {
-       /* case LAST_FIT: */    /* search for last possible */
-       /* case LAST_FIT_U: */
-       /* case LAST_FIT_UO: */
+          case LAST_FIT:       /* search for last possible */
+          case LAST_FIT_U:
+          case LAST_FIT_UO:
           default:
             foundSeg = p;
             break;
@@ -196,7 +195,7 @@ searchAgain:
   if (!foundSeg || !foundSeg->m_size)
   {                             /* no block to fullfill the request */
     if ((mode != LARGEST) && (mode & FIRST_FIT_U) &&
-	uppermem_link && uppermem_root != 0xffff)
+	(uppermem_link & 1) && uppermem_root != 0xffff)
     {
       mode &= ~FIRST_FIT_U;
       goto searchAgain;
@@ -296,11 +295,11 @@ COUNT DosMemFree(UWORD para)
   p = para2far(para);
 
   /* check for corruption                         */
-  if (!mcbFreeable(p)) /* does not have to be valid, freeable is enough */
+  if (!mcbFreeable(p))	/* does not have to be valid, freeable is enough */
     return DE_INVLDMCB;
 
   /* Mark the mcb as free so that we can later    */
-  /* merge with other surrounding free mcb's      */
+  /* merge with other surrounding free MCBs       */
   p->m_psp = FREE_PSP;
   fmemset(p->m_name, '\0', 8);
 
@@ -317,7 +316,7 @@ COUNT DosMemFree(UWORD para)
  */
 COUNT DosMemChange(UWORD para, UWORD size, UWORD * maxSize)
 {
-  REG mcb FAR *p, FAR * q;
+  REG mcb FAR *p; mcb FAR * q;
 
   /* Initialize                                                   */
   p = para2far(para - 1);       /* pointer to MCB */
@@ -357,11 +356,11 @@ COUNT DosMemChange(UWORD para, UWORD size, UWORD * maxSize)
     p->m_type = MCB_NORMAL;
 
     /* Mark the mcb as free so that we can later    */
-    /* merge with other surrounding free mcb's      */
+    /* merge with other surrounding free MCBs       */
     q->m_psp = FREE_PSP;
     fmemset(q->m_name, '\0', 8);
 
-    /* try to join q with the free mcb's following it if possible */
+    /* try to join q with the free MCBs following it if possible */
     if (joinMCBs(FP_SEG(q)) != SUCCESS)
       return DE_MCBDESTRY;
   }
@@ -408,7 +407,7 @@ COUNT DosMemCheck(void)
 COUNT FreeProcessMem(UWORD ps)
 {
   mcb FAR *p;
-  BYTE oldumbstate = uppermem_link;
+  BYTE oldumbstate = uppermem_link & 1;
 
   /* link in upper memory to free those , too */
   DosUmbLink(1);
@@ -471,7 +470,7 @@ void DosUmbLink(unsigned n)
     return;
 
   p = para2far(first_mcb);
-  if (n > 1 || uppermem_link == n)
+  if (n > 1 || (uppermem_link & 1) == n)
     return;
   while (FP_SEG(p) != uppermem_root && p->m_type != MCB_LAST)
   {

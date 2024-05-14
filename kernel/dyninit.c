@@ -19,7 +19,7 @@ additionally:
  
  02610H 0F40EH 0CDFFH HMA_TEXT           HMA
 
- FCB's, f_nodes, buffers,...
+ FCBs, f_nodes, buffers,...
  drivers 
  
  
@@ -38,26 +38,30 @@ additionally:
 #include "portab.h"
 #include "init-mod.h"
 #include "dyndata.h"
-#include "debug.h"
+
+#if defined(DEBUG)
+#define DebugPrintf(x) printf x
+#else
+#define DebugPrintf(x)
+#endif
 
 /*extern struct DynS FAR Dyn;*/
 
 #ifndef __TURBOC__
-#include "init-dat.h"
 extern struct DynS DOSFAR ASM Dyn;
 #else
 extern struct DynS FAR ASM Dyn;
 #endif
 
-#ifdef DEBUG
 void far *DynAlloc(char *what, unsigned num, unsigned size)
-#else
-void far *_DynAlloc(unsigned num, unsigned size)
-#endif
 {
   void far *now;
   unsigned total = num * size;
   struct DynS far *Dynp = MK_FP(FP_SEG(LoL), FP_OFF(&Dyn));
+
+#ifndef DEBUG
+  UNREFERENCED_PARAMETER(what);
+#endif
 
   if ((ULONG) total + Dynp->Allocated > 0xffff)
   {
@@ -77,13 +81,11 @@ void far *_DynAlloc(unsigned num, unsigned size)
   return now;
 }
 
-/*
 void DynFree(void *ptr)
 {
   struct DynS far *Dynp = MK_FP(FP_SEG(LoL), FP_OFF(&Dyn));
   Dynp->Allocated = (char *)ptr - (char *)Dynp->Buffer;
 }
-*/
 
 void FAR * DynLast()
 {

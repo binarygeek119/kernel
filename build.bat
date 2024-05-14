@@ -1,7 +1,6 @@
 @echo off
-
-:- batch file to build everything
-:- $Id$
+rem batch file to build everything
+rem IF NOTHING COMPILES, CHECK IF YOUR CVS CHECKOUT USES CORRECT DOS LINEBREAKS
 
 if NOT "%1" == "/?" goto start
 echo ":-----------------------------------------------------------------------"
@@ -14,6 +13,7 @@ goto end
 
 :start
 
+:- assume an error until successful build
 set XERROR=1
 if "%XERROR%" == "" goto noenv
 
@@ -24,7 +24,8 @@ if not exist config.bat echo You must copy CONFIG.B to CONFIG.BAT and edit it to
 if not exist config.bat goto abort
 
 call config.bat
-if "%LAST%" == "" goto noenv
+:-if "%LAST%" == "" goto noenv
+set dos4g=quiet
 
 :-----------------------------------------------------------------------
 :- following is command line handling
@@ -36,10 +37,10 @@ if "%LAST%" == "" goto noenv
 if "%1" == "fat32" set XFAT=32
 if "%1" == "fat16" set XFAT=16
 
-if "%1" == "msc"   set COMPILER=MSC
+if "%1" == "msc"   set COMPILER=MSCL8
 if "%1" == "wc"    set COMPILER=WATCOM
-if "%1" == "tc"    set COMPILER=TC
-if "%1" == "tcpp"  set COMPILER=TCPP
+if "%1" == "tc"    set COMPILER=TC2
+if "%1" == "tcpp"  set COMPILER=TURBOCPP
 if "%1" == "bc"    set COMPILER=BC
 
 if "%1" == "86"    set XCPU=86
@@ -50,6 +51,7 @@ if "%1" == "x86"   goto setCPU
 if "%1" == "upx"   set XUPX=upx --8086 --best
 
 if "%1" == "debug" set ALLCFLAGS=%ALLCFLAGS% -DDEBUG
+if "%1" == "lfn"   set ALLCFLAGS=%ALLCFLAGS% -DWITHLFNAPI
 if "%1" == "lfnapi" set ALLCFLAGS=%ALLCFLAGS% -DWITHLFNAPI
 
 if "%1" == "win"   set ALLCFLAGS=%ALLCFLAGS% -DWIN31SUPPORT
@@ -64,11 +66,8 @@ if "%1" == "/D"    goto setDefine
 shift
 if not "%1" == "" goto loop_commandline
 
-if "%COMPILER%" == "" echo you MUST define a COMPILER variable in CONFIG.BAT
-if "%COMPILER%" == "" goto abort
-
-call defaults.bat
-if "%LAST%" == "" goto noenv
+call default.bat
+:-if "%LAST%" == "" goto noenv
 
 :-----------------------------------------------------------------------
 :- finally - we are going to compile
@@ -80,35 +79,35 @@ echo.
 echo Process UTILS ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 echo.
 cd utils
-call %MAKE% all
+%MAKE% production
 if errorlevel 1 goto abort-cd
 
 echo.
 echo Process LIB ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 echo.
 cd ..\lib
-call %MAKE% all
+%MAKE%
 if errorlevel 1 goto abort-cd
 
 echo.
 echo Process DRIVERS ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 echo.
 cd ..\drivers
-call %MAKE% all
+%MAKE% production
 if errorlevel 1 goto abort-cd
 
 echo.
 echo Process BOOT +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 echo.
 cd ..\boot
-call %MAKE% all
+%MAKE% production
 if errorlevel 1 goto abort-cd
 
 echo.
 echo Process SYS ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 echo.
 cd ..\sys
-call %MAKE% all
+%MAKE% production
 if errorlevel 1 goto abort-cd
 if NOT "%XUPX%" == "" %XUPX% ..\bin\sys.com
 
@@ -116,15 +115,28 @@ echo.
 echo Process KERNEL +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 echo.
 cd ..\kernel
-call %MAKE% all
+%MAKE% production
+if errorlevel 1 goto abort-cd
+
+echo.
+echo Process COUNTRY +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+echo.
+cd ..\country
+%MAKE% DIRSEP=\ CP=copy production
+if errorlevel 1 goto abort-cd
+
+echo.
+echo Process SETVER +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+echo.
+cd ..\setver
+%MAKE% production
 if errorlevel 1 goto abort-cd
 
 cd ..
 
-:- if you like, put finalizing commands (like copy to floppy) into build2.bat
-
 set XERROR=
 
+:- if you like, put finalizing commands (like copy to floppy) into build2.bat
 if exist build2.bat call build2.bat
 
 echo.
@@ -155,8 +167,18 @@ if "%1" == "" echo such as /D DEBUG : extra DEBUG output
 if "%1" == "" echo or      /D DOSEMU : printf output goes to dosemu log
 if "%1" == "" echo or      /D WIN31SUPPORT : enable Win 3.x hooks
 if "%1" == "" goto abort
+if "%2" == "/V" goto :setDefineWithValue
 set ALLCFLAGS=%ALLCFLAGS% -D%1
 set NASMFLAGS=%NASMFLAGS% -D%1
+REM $(NASMBOOTFLAGS) are extra flags only used when building boot sectors
+set NASMBOOTFLAGS=%NASMBOOTFLAGS% -d%1
+goto nextOption
+
+:setDefineWithValue
+set ALLCFLAGS=%ALLCFLAGS% -D%1=%3
+set NASMFLAGS=%NASMFLAGS% -D%1=%3
+shift
+shift
 goto nextOption
 
 :noenv
@@ -170,4 +192,4 @@ cd ..
 echo Compilation was aborted!
 
 :end
-call defaults.bat clearset
+call default.bat clearset

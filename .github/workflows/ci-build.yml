@@ -40,7 +40,7 @@ jobs:
         )
 
     - name: upload
-      if: github.repository == 'binarygeek119/kernel' &&
+      if: github.repository == 'FDOS/kernel' &&
         (github.event_name == 'push' || github.event.pull_request.merged == true)
       uses: actions/upload-artifact@v4
       with:

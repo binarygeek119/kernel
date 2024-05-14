@@ -1,45 +1,40 @@
 @echo off
 
-:- batch file to clean and clobber everything
-:- $Id$
+:- batch file to clean everything
+:- $Id: clean.bat 1181 2006-05-20 20:45:59Z mceric $
 
-if "%1" == "" %0 clean
-goto %1
-goto end
-
-:clean
-:clobber
 if not exist config.bat echo You must copy CONFIG.B to CONFIG.BAT and edit it to reflect your setup!
 if not exist config.bat goto end
 
 call config.bat
-if not "%LAST%" == "" call defaults.bat
-if     "%LAST%" == "" goto end
+call default.bat
 
 cd utils
-call %MAKE% %1
+%MAKE% clean
 
 cd ..\lib
-call %MAKE% %1
+%MAKE% clean
 
 cd ..\drivers
-call %MAKE% %1
+%MAKE% clean
 
 cd ..\boot
-call %MAKE% %1
+%MAKE% clean
 
 cd ..\sys
-call %MAKE% %1
+%MAKE% clean
 
 cd ..\kernel
-call %MAKE% %1
+%MAKE% clean
+
+cd ..\setver
+%MAKE% clean
 
 cd ..\hdr
-if exist *.bak del *.bak>nul
+if exist *.bak del *.bak
 
 cd ..
-if exist *.bak del *.bak>nul
-if "%1"=="clobber" if exist status.me del status.me>nul
+if exist *.bak del *.bak
 
 :end
-defaults.bat clearset
+default.bat clearset

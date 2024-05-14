@@ -32,7 +32,7 @@
 
 #ifdef VERSION_STRINGS
 static BYTE *charioRcsId =
-    "$Id$";
+    "$Id: chario.c 1413 2009-06-01 13:41:03Z bartoldeman $";
 #endif
 
 #include "globals.h"
@@ -73,7 +73,7 @@ long BinaryCharIO(struct dhdr FAR **pdev, size_t n, void FAR * bp,
     CharReqHdr.r_count = n;
     CharReqHdr.r_trans = bp;
     err = CharRequest(pdev, command);
-  } while (err > 0);
+  } while (err == 1);
   return err == SUCCESS ? (long)CharReqHdr.r_count : err;
 }
 
@@ -96,7 +96,9 @@ STATIC void CharCmd(struct dhdr FAR **pdev, unsigned command)
 
 STATIC int Busy(struct dhdr FAR **pdev)
 {
-  CharCmd(pdev, C_ISTAT);
+  CharCmd(pdev, C_NDREAD);
+  if (CharReqHdr.r_status & S_ERROR)
+    CharCmd(pdev, C_ISTAT);
   return CharReqHdr.r_status & S_BUSY;
 }
 
@@ -138,15 +140,42 @@ int ndread(struct dhdr FAR **pdev)
 
 /* OUTPUT FUNCTIONS */
 
+#ifdef __WATCOMC__
+void fast_put_char(char c);
+#pragma aux fast_put_char = "int 29h" parm[al] modify exact [bx]
+#else
+
+/* writes a character in raw mode using int29 for speed */
+STATIC void fast_put_char(unsigned char chr)
+{
+#if defined(__TURBOC__)
+    _AL = chr;
+    __int__(0x29);
+#elif defined(__GNUC__)
+    asm volatile("int $0x29":: "a"(chr):"bx");
+#elif defined(I86)
+    asm
+    {
+      mov al, byte ptr chr;
+      int 0x29;
+    }
+#endif
+}
+#endif
+
 void update_scr_pos(unsigned char c, unsigned char count)
 {
+  unsigned char scrpos = scr_pos;
+
   if (c == CR)
-    scr_pos = 0;
+    scrpos = 0;
   else if (c == BS) {
-    if (scr_pos > 0)
-      scr_pos--;
-  } else if (c != LF && c != BELL)
-    scr_pos += count;
+    if (scrpos > 0)
+      scrpos--;
+  } else if (c != LF && c != BELL) {
+    scrpos += count;
+  }
+  scr_pos = scrpos;
 }
 
 STATIC int raw_get_char(struct dhdr FAR **pdev, BOOL check_break);
@@ -165,6 +194,9 @@ long cooked_write(struct dhdr FAR **pdev, size_t n, char FAR *bp)
 
     if (c == CTL_Z)
       break;
+
+    /* write a character in cooked mode; maybe with printer echo;
+       handles TAB expansion */
     if (c == HT) {
       count = 8 - (scr_pos & 7);
       c = ' ';
@@ -180,7 +212,7 @@ long cooked_write(struct dhdr FAR **pdev, size_t n, char FAR *bp)
       if (PrinterEcho)
         DosWrite(STDPRN, 1, &c);
       if (fast_counter & 0x80)
-        put_console(c);
+        fast_put_char(c);
       else
       {
         err = CharIO(pdev, c, C_OUTPUT);
@@ -224,15 +256,16 @@ void write_char_stdout(int c)
 #define iscntrl(c) ((unsigned char)(c) < ' ')
 
 /* this is for handling things like ^C, mostly used in echoed input */
-STATIC VOID echo_char(int c, int sft_idx, unsigned i)
+STATIC int echo_char(int c, int sft_idx)
 {
-  local_buffer[i] = c;
+  int out = c;
   if (iscntrl(c) && c != HT && c != LF && c != CR)
   {
     write_char('^', sft_idx);
-    c += '@';
+    out += '@';
   }
-  write_char(c, sft_idx);
+  write_char(out, sft_idx);
+  return c;
 }
 
 STATIC void destr_bs(int sft_idx)
@@ -263,11 +296,11 @@ long cooked_read(struct dhdr FAR **pdev, size_t n, char FAR *bp)
   return xfer;
 }
 
-STATIC unsigned char read_char_sft_dev(int sft_in, int sft_out,
+STATIC unsigned read_char_sft_dev(int sft_in, int sft_out,
                                        struct dhdr FAR **pdev,
                                        BOOL check_break)
 {
-  unsigned char c;
+  unsigned c;
 
   if (*pdev)
   {
@@ -359,13 +392,15 @@ void read_line(int sft_in, int sft_out, keyboard FAR * kp)
           write_char(CR, sft_out);
           write_char(LF, sft_out);
         }
+        break;
+
       case CTL_F:
         break;
 
       case RIGHT:
       case F1:
         if (stored_pos < stored_size && count < size - 1)
-          echo_char(kp->kb_buf[stored_pos++], sft_out, count++);
+          local_buffer[count++] = echo_char(kp->kb_buf[stored_pos++], sft_out);
         break;
             
       case F2:
@@ -391,7 +426,7 @@ void read_line(int sft_in, int sft_out, keyboard FAR * kp)
         if (c != F4) /* not delete */
         {
           while (stored_pos < new_pos && count < size - 1)
-            echo_char(kp->kb_buf[stored_pos++], sft_out, count++);
+              local_buffer[count++] = echo_char(kp->kb_buf[stored_pos++], sft_out);
         }
         stored_pos = new_pos;
         break;
@@ -462,12 +497,15 @@ void read_line(int sft_in, int sft_out, keyboard FAR * kp)
         /* fall through */
 
       default:
+        if (c >= 256)
+          break;
         if (count < size - 1 || c == CR)
-          echo_char(c, sft_out, count++);
+          local_buffer[count++] = echo_char(c, sft_out);
         else
           write_char(BELL, sft_out);
         if (stored_pos < stored_size && !insert)
           stored_pos++;
+        break;
     }
     first = FALSE;
   } while (c != CR);
@@ -494,8 +532,7 @@ size_t read_line_handle(int sft_idx, size_t n, char FAR * bp)
       kb_buf.kb_size = LINEBUFSIZECON;
     }
     read_line(sft_idx, sft_idx, &kb_buf);
-    write_char(LF, sft_idx);
-    kb_buf.kb_buf[kb_buf.kb_count + 1] = LF;
+    kb_buf.kb_buf[kb_buf.kb_count + 1] = echo_char(LF, sft_idx);
     inputptr = kb_buf.kb_buf;
     if (*inputptr == CTL_Z)
     {

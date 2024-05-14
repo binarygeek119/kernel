@@ -116,6 +116,11 @@
 ;	|IVT     | Interrupt Vector Table
 ;	+--------+ 0000:0000
 
+                ; NOTE: sys must be updated if magic offsets change
+%assign ISFAT1216DUAL 1
+	%include "magic.mac"
+
+
 CPU 8086  ; enable assembler warnings to limit instruction set
 
 ;%define ISFAT12         1              ; only 1 of these should be set,
@@ -143,7 +148,7 @@ segment	.text
 
 %define FATBUF          bp-0x7500       ; offset of temporary buffer for FAT
                                         ; chain 0:FATBUF = 0:0700 = LOADSEG:0
-%define ROOTDIR         bp-0x7700       ; offset to buffer for root directory
+%define ROOTDIR         0x7C00-0x7700   ; offset to buffer for root directory
                                         ; entry of kernel 0:ROOTDIR
 %define CLUSTLIST       bp+0x0300       ; zero terminated list of clusters
                                         ; that the kernel occupies
@@ -223,7 +228,22 @@ Entry:          jmp     short real_start
                 db 0x29         ; extended boot record id
                 dd 0x12345678   ; volume serial number
                 db 'NO NAME    '; volume label
-                db 'FAT12   '   ; filesystem id
+                times   36h - ($ - $$) db 0
+                ; The filesystem ID is used by lDOS's instsect (by ecm)
+                ;  by default to validate that the filesystem matches.
+%ifdef ISFAT12
+ %define FATFS "FAT12"
+ %ifdef ISFAT16
+ %error Must select one FS
+ %endif
+%elifdef ISFAT16
+ %define FATFS "FAT16"
+%else
+ %define FATFS "unknown"
+ %error Must select one FS
+%endif
+                db FATFS        ; filesystem id
+                times   3Eh - ($ - $$) db 32
 
 ;-----------------------------------------------------------------------
 ;   ENTRY
@@ -269,6 +289,7 @@ real_start:
 ; in DL, however we work around this in SYS.COM by NOP'ing out the use of DL
 ; (formerly we checked for [drive]==0xff; update sys.c if code moves)
 ;
+	magicoffset "set unit", 4Fh, 4Fh
                 mov     [drive], dl        ; rely on BIOS drive number in DL
 
 
@@ -319,11 +340,11 @@ real_start:
                 pop     di              ; mov di, word [RootDirSecs]
                 pop     ax              ; mov ax, word [root_dir_start]
                 pop     dx              ; mov dx, word [root_dir_start+2]
-                lea     bx, [ROOTDIR]   ; es:bx = 0:0500
+                mov     bx, ROOTDIR     ; es:bx = 0:0500
                 push    es              ; save pointer to ROOTDIR
                 call    readDisk
                 pop     es              ; restore pointer to ROOTDIR
-                lea     si, [ROOTDIR]   ; ds:si = 0:0500
+                mov     si, ROOTDIR     ; ds:si = 0:0500
 
 
 		; Search for kernel file name, and find start cluster.
@@ -340,6 +361,7 @@ next_entry:     mov     cx, 11
                 jc      boot_error      ; fail if not found and si wraps
                 cmp     byte [si], 0    ; if the first byte of the name is 0,
                 jnz     next_entry      ; there are no more files in the directory
+                jmp     boot_error
 
 ffDone:
                 mov [first_cluster], ax ; store first cluster number
@@ -347,7 +369,7 @@ ffDone:
 %ifdef SETROOTDIR
                 ; copy over this portion of root dir to 0x0:500 for PC-DOS
                 ; (this may allow IBMBIO.COM to start in any directory entry)
-                lea     di, [ROOTDIR]   ; es:di = 0:0500
+                mov     di, ROOTDIR     ; es:di = 0:0500
                 mov     cx, 32          ; limit to this 1 entry (rest don't matter)
                 rep     movsw
 %endif
@@ -399,11 +421,12 @@ fat_12:         add     si, si          ; multiply cluster number by 3...
                 ; value is in bits 4-15, and must be shifted right 4 bits. If
                 ; the number was odd, CF was set in the last shift instruction.
 
-                jnc     fat_even
-                mov     cl, 4
+                mov     cl, 4           ; always initialise shift counter
+                jc      fat_odd         ; is odd, only shift down -->
+                shl     ax, cl          ; shift up (effectively masks off
+                                        ;  the highest 4 bits)
+fat_odd:
                 shr     ax, cl
-
-fat_even:       and     ah, 0x0f        ; mask off the highest 4 bits
                 cmp     ax, 0x0ff8      ; check for EOF
                 jb      next_clust      ; continue if not EOF
 
@@ -455,13 +478,14 @@ cluster_next:   lodsw                   ; AX = next cluster to read
 %else                
                 jmp     LOADSEG:0000    ; yes, pass control to kernel
 %endif
+	magicoffset "load jump ofs", 11Ah, 118h, -4
 
 
 ; failed to boot
 boot_error:     
 call            show
-;               db      "Error! Hit a key to reboot."
-                db      "):."
+;               db      "Error! Hit a key to reboot.",0
+                db      "):",0
 %ifdef LOOPONERR
 jmp $
 %else
@@ -478,7 +502,9 @@ load_next:      dec     ax                      ; cluster numbers start with 2
                 dec     ax
 
                 mov     di, word [bsSecPerClust]
-                and     di, 0xff                ; DI = sectors per cluster
+                dec     di                      ; minus one if 256 spc
+                and     di, 0xff                ; DI = sectors per cluster - 1
+                inc     di                      ; = spc
                 mul     di
                 add     ax, [data_start]
                 adc     dx, [data_start+2]      ; DX:AX = first sector to read
@@ -488,13 +514,14 @@ load_next:      dec     ax                      ; cluster numbers start with 2
 
 ; shows text after the call to this function.
 
+show.do_show:
+                mov     ah, 0Eh                 ; show character
+                int     10h                     ; via "TTY" mode
 show:           pop     si
                 lodsb                           ; get character
                 push    si                      ; stack up potential return address
-                mov     ah,0x0E                 ; show character
-                int     0x10                    ; via "TTY" mode
-                cmp     al,'.'                  ; end of string?
-                jne     show                    ; until done
+                cmp     al, 0                   ; end of string?
+                jne     .do_show                ; until done
                 ret
 
 
@@ -516,7 +543,7 @@ readDisk:       push    si                      ; preserve cluster #
                 mov     word [LBA_OFF], bx
 
                 call    show
-                db      "."
+                db      ".",0
 read_next:
 
 ; initialize constants
@@ -637,6 +664,8 @@ read_skip:
                 ret
 
        times   0x01f1-$+$$ db 0
+
+	magicoffset "kernel name", 1F1h, 1F1h
 %ifdef MSCOMPAT
 filename        db      "IO      SYS"
 %else

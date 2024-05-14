@@ -29,34 +29,33 @@
 
 #include "portab.h"
 #include "globals.h"
-#include "debug.h"
 
 #ifdef VERSION_STRINGS
-BYTE *RcsId = "$Id$";
+BYTE *RcsId = "$Id: fatfs.c 1632 2011-06-13 16:29:14Z bartoldeman $";
 #endif
 
 /*                                                                      */
 /*      function prototypes                                             */
 /*                                                                      */
-f_node_ptr xlt_fd(COUNT);
-STATIC void save_far_f_node(f_node_ptr fnp);
-STATIC f_node_ptr get_near_f_node(void);
-STATIC f_node_ptr split_path(char *, char *);
-BOOL find_fname(f_node_ptr, char *, int);
+STATIC f_node_ptr sft_to_fnode(int fd);
+STATIC void fnode_to_sft(f_node_ptr fnp);
+STATIC int find_fname(const char *path, int attr, f_node_ptr fnp);
     /* /// Added - Ron Cemer */
-STATIC void merge_file_changes(f_node_ptr fnp, int collect);
-    /* /// Added - Ron Cemer */
-STATIC int is_same_file(f_node_ptr fnp1, f_node_ptr fnp2);
-    /* /// Added - Ron Cemer */
-STATIC void copy_file_changes(f_node_ptr src, f_node_ptr dst);
-BOOL find_free(f_node_ptr);
-STATIC int alloc_find_free(f_node_ptr fnp, char *path, char *fcbname);
+STATIC int merge_file_changes(f_node_ptr fnp, int collect);
+STATIC BOOL find_free(f_node_ptr);
+STATIC int alloc_find_free(f_node_ptr fnp, char *path);
 STATIC VOID wipe_out(f_node_ptr);
-CLUSTER extend(f_node_ptr);
-COUNT extend_dir(f_node_ptr);
+STATIC CLUSTER extend(f_node_ptr);
+STATIC COUNT extend_dir(f_node_ptr);
 CLUSTER first_fat(f_node_ptr);
 COUNT map_cluster(f_node_ptr, COUNT);
-STATIC VOID shrink_file(f_node_ptr fnp);
+STATIC int shrink_file(f_node_ptr fnp);
+
+/* FAT time notation in the form of hhhh hmmm mmmd dddd (d = double second) */
+STATIC time time_encode(struct dostime *t)
+{
+  return (t->hour << 11) | (t->minute << 5) | (t->second >> 1);
+}
 
 #ifdef WITHFAT32
 CLUSTER getdstart(struct dpb FAR *dpbp, struct dirent *dentry)
@@ -71,14 +70,6 @@ void setdstart(struct dpb FAR *dpbp, struct dirent *dentry, CLUSTER value)
   dentry->dir_start = (UWORD)value;
   if (ISFAT32(dpbp))
     dentry->dir_start_high = (UWORD)(value >> 16);
-}
-
-BOOL checkdstart(struct dpb FAR *dpbp, struct dirent *dentry, CLUSTER value)
-{
-  if (!ISFAT32(dpbp))
-    return dentry->dir_start == (UWORD)value;
-  return (dentry->dir_start == (UWORD)value &&
-          dentry->dir_start_high == (UWORD)(value >> 16));
 }
 #endif
 
@@ -101,7 +92,7 @@ struct dpb FAR *get_dpb(COUNT dsk)
   return cdsp->cdsDpb;
 }
 
-/* initialize directory entry */
+/* initialize directory entry (creation/access stamps 0 as per MS-DOS 7.10) */
 STATIC void init_direntry(struct dirent *dentry, unsigned attrib,
                           CLUSTER cluster, char *name)
 {
@@ -112,6 +103,7 @@ STATIC void init_direntry(struct dirent *dentry, unsigned attrib,
 #endif
   dentry->dir_start = (UWORD)cluster;
   dentry->dir_attrib = (UBYTE)attrib;
+  /* set create and last modified time & date */
   dentry->dir_crtime = dentry->dir_time = dos_gettime();
   dentry->dir_crdate = dentry->dir_date = dos_getdate();
 }
@@ -129,42 +121,25 @@ STATIC void init_direntry(struct dirent *dentry, unsigned attrib,
 /* see DosOpenSft(), dosfns.c for an explanation of the flags bits      */
 /* directory opens are allowed here; these are not allowed by DosOpenSft*/
 
-long dos_open(char *path, unsigned flags, unsigned attrib)
+int dos_open(char *path, unsigned flags, unsigned attrib, int fd)
 {
-  REG f_node_ptr fnp;
-  char fcbname[FNAME_SIZE + FEXT_SIZE];
-  int status = S_OPENED;
-
-  /* First test the flags to see if the user has passed a valid   */
-  /* file mode...                                                 */
-  if ((flags & O_ACCMODE) > 2)
-    return DE_INVLDACC;
-
-  /* next, split the passed dir into components (i.e. - path to   */
-  /* new directory and name of new directory.                     */
-  if ((fnp = split_path(path, fcbname)) == NULL)
-  {
-    FatFSDbgPrintf(("dos_open: splitpath(\"%s\", \"%11s\") failed.\n", path, fcbname));
-    return DE_PATHNOTFND;
-  }
+  REG f_node_ptr fnp = sft_to_fnode(fd);
+  int status = find_fname(path, D_ALL | attrib, fnp);
 
   /* Check that we don't have a duplicate name, so if we  */
   /* find one, truncate it (O_CREAT).                     */
-  if (find_fname(fnp, fcbname, D_ALL | attrib))
+  if (status == SUCCESS)
   {
-    FatFSDbgPrintf(("dos_open: filename match found\n"));
+    unsigned char dir_attrib = fnp->f_dir.dir_attrib;
     if (flags & O_TRUNC)
     {
       /* The only permissable attribute is archive,   */
       /* check for any other bit set. If it is, give  */
       /* an access error.                             */
-      if ((fnp->f_dir.dir_attrib & (D_RDONLY | D_DIR | D_VOLID))
-          || (fnp->f_dir.dir_attrib & ~D_ARCHIVE & ~attrib))
-      {
-        dir_close(fnp);
+      if ((dir_attrib & (D_RDONLY | D_DIR | D_VOLID))
+          || (dir_attrib & ~D_ARCHIVE & ~attrib))
         return DE_ACCESS;
-      }
-      
+
       /* Release the existing files FAT and set the   */
       /* length to zero, effectively truncating the   */
       /* file to zero.                                */
@@ -174,27 +149,25 @@ long dos_open(char *path, unsigned flags, unsigned attrib)
     else if (flags & O_OPEN)
     {
       /* force r/o open for FCB if the file is read-only */
-      if ((flags & O_FCB) && (fnp->f_dir.dir_attrib & D_RDONLY))
+      if ((flags & O_FCB) && (dir_attrib & D_RDONLY))
         flags = (flags & ~3) | O_RDONLY;
 
-      /* Check permissions. -- JPP */
-      if ((fnp->f_dir.dir_attrib & D_RDONLY) &&
-          ((flags & O_ACCMODE) != O_RDONLY))
-      {
-        dir_close(fnp);
+      /* Check permissions. -- JPP
+         (do not allow to open volume labels/directories,
+          and do not allow writing to r/o files) */
+      if ((dir_attrib & (D_DIR | D_VOLID)) ||
+          ((dir_attrib & D_RDONLY) && ((flags & O_ACCMODE) != O_RDONLY)))
         return DE_ACCESS;
-      }
+      status = S_OPENED;
     }
     else
     {
-      dir_close(fnp);
       return DE_FILEEXISTS;
     }
   }
-  else if (flags & O_CREAT)
+  else if (status == DE_FILENOTFND && (flags & O_CREAT))
   {
-    int ret = alloc_find_free(fnp, path, fcbname);
-    FatFSDbgPrintf(("dos_open: create\n"));
+    int ret = alloc_find_free(fnp, path);
     if (ret != SUCCESS)
       return ret;
     status = S_CREATED;
@@ -203,47 +176,31 @@ long dos_open(char *path, unsigned flags, unsigned attrib)
   {
     /* open: If we can't find the file, just return a not    */
     /* found error.                                          */
-    dir_close(fnp);
-    FatFSDbgPrintf(("dos_open: file not found\n"));
-    return DE_FILENOTFND;
-  }
-  
-  /* Set the fnode to the desired mode                    */
-  /* Updating the directory entry first.                  */
-  fnp->f_mode = flags & O_ACCMODE;
-
-  if (status != S_OPENED)
-  {
-    init_direntry(&fnp->f_dir, attrib, FREE, fcbname);
-    fnp->f_flags = F_DMOD | F_DDIR;
-    if (!dir_write(fnp))
-    {
-      release_f_node(fnp);
-      return DE_ACCESS;
-    }
+    return status;
   }
 
   /* Now change to file                                   */
+  fnp->f_sft_idx = fd;
   fnp->f_offset = 0l;
+  fnp->f_cluster_offset = 0;
 
+  fnp->f_flags &= ~SFT_FDATE;
+  /* use FCLEAN even on replaced/created files: the bit is reset */
+  /* if the file is written to later                             */
+  fnp->f_flags |= SFT_FCLEAN;
   if (status != S_OPENED)
   {
-    fnp->f_cluster = FREE;
-    setdstart(fnp->f_dpb, &fnp->f_dir, FREE);
-    fnp->f_cluster_offset = 0;
+    init_direntry(&fnp->f_dir, attrib, FREE, fnp->f_dmp->dm_name_pat);
+    if (!dir_write(fnp))
+      return DE_ACCESS;
   }
-
-  fnp->f_flags = 0;
-  if (status != S_OPENED)
-    fnp->f_flags = F_DMOD;
 
   merge_file_changes(fnp, status == S_OPENED); /* /// Added - Ron Cemer */
   /* /// Moved from above.  - Ron Cemer */
   fnp->f_cluster = getdstart(fnp->f_dpb, &fnp->f_dir);
-  fnp->f_cluster_offset = 0;
 
-  save_far_f_node(fnp);
-  return xlt_fnp(fnp) | ((long)status << 16);
+  fnode_to_sft(fnp);
+  return status;
 }
 
 BOOL fcmp_wild(const char * s1, const char * s2, unsigned n)
@@ -256,20 +213,12 @@ BOOL fcmp_wild(const char * s1, const char * s2, unsigned n)
 
 COUNT dos_close(COUNT fd)
 {
-  f_node_ptr fnp;
-
   /* Translate the fd into a useful pointer                       */
-  fnp = xlt_fd(fd);
+  f_node_ptr fnp = sft_to_fnode(fd);
 
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit        */
-  /* note: an invalid fd is indicated by a 0 return               */
-  if (fnp == (f_node_ptr) 0)
-    return DE_INVLDHNDL;
-
-  if (fnp->f_flags & F_DMOD)
+  if (!(fnp->f_flags & SFT_FCLEAN))
   {
-    if (!(fnp->f_flags & F_DDATE))
+    if (!(fnp->f_flags & SFT_FDATE))
     {
       fnp->f_dir.dir_time = dos_gettime();
       fnp->f_dir.dir_date = dos_getdate();
@@ -277,52 +226,18 @@ COUNT dos_close(COUNT fd)
 
     merge_file_changes(fnp, FALSE);     /* /// Added - Ron Cemer */
   }
-  fnp->f_flags |= F_DDIR;
+  fnp->f_sft_idx = 0xff;
 
-  dir_close(fnp);
-  return SUCCESS;
-}
-
-COUNT dos_commit(COUNT fd)
-{
-  f_node_ptr fnp, fnp2;
-
-  /* Translate the fd into a useful pointer                       */
-  fnp = xlt_fd(fd);
-
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit        */
-  /* note: an invalid fd is indicated by a 0 return               */
-  if (fnp == (f_node_ptr) 0)
-    return DE_INVLDHNDL;
-  fnp2 = get_f_node();
-  if (fnp2 == (f_node_ptr) 0)
-  {
-    release_near_f_node(fnp);
-    return DE_INVLDHNDL;
-  }
-
-  /* a copy of the fnode is closed meaning that the directory info
-     is updated etc, but we keep our old info */
-  memcpy(fnp2, fnp, sizeof(*fnp));
-  save_far_f_node(fnp2);
-  release_near_f_node(fnp);
-  return dos_close(xlt_fnp(fnp2));
+  return dir_write_update(fnp, TRUE) ? SUCCESS : DE_INVLDHNDL;
 }
 
 /*                                                                      */
 /* split a path into it's component directory and file name             */
 /*                                                                      */
-f_node_ptr split_path(char * path, char * fcbname)
+f_node_ptr split_path(const char * path, f_node_ptr fnp)
 {
-  REG f_node_ptr fnp;
-
-  /* Start off by parsing out the components.                     */ 
-  int dirlength = ParseDosName(path, fcbname, FALSE);
-  FatFSDbgPrintf(("split_path: dirlen=%i, path=\"%s\", fcbname=\"%11s\"\n", \
-                dirlength, path, fcbname));
-
-  if (dirlength < SUCCESS)
+  /* check if the path ends in a backslash                        */
+  if (path[strlen(path) - 1] == '\\')
     return (f_node_ptr) 0;
 
 /*  11/29/99 jt
@@ -339,47 +254,19 @@ f_node_ptr split_path(char * path, char * fcbname)
 #ifdef DEBUG
   if (get_cds(path[0]-'A')->cdsFlags & CDSNETWDRV)
   {
-    printf("split path called for redirected file: `%11s'\n",
-           fcbname);
+    printf("split path called for redirected file: `%s'\n", path);
     return (f_node_ptr) 0;
   }
 #endif
 
   /* Translate the path into a useful pointer                     */
-  {
-    char tmp = path[dirlength];
-    path[dirlength] = '\0';
-    fnp = dir_open(path);
-    path[dirlength] = tmp;
-  } 
-
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit...     */
-  /* note: an invalid fd is indicated by a 0 return               */
-  if (fnp == (f_node_ptr) 0 || fnp->f_count <= 0)
-  {
-    FatFSDbgPrintf(("split_path: failing, fnp is %sNULL, f_count=%i\n", \
-                 (fnp==(f_node_ptr)0)?"":"NOT", \
-                 (fnp==(f_node_ptr)0)?123:fnp->f_count));
-    dir_close(fnp);
-    return (f_node_ptr) 0;
-  }
-
-  FatFSDbgPrintf(("split_path: success\n"));
-  return fnp;
+  return dir_open(path, TRUE, fnp);
 }
 
 /* checks whether directory part of path exists */
 BOOL dir_exists(char * path)
 {
-  REG f_node_ptr fnp;
-  char fcbname[FNAME_SIZE + FEXT_SIZE];
-
-  if ((fnp = split_path(path, fcbname)) == NULL)
-    return FALSE;
-  
-  dir_close(fnp);
-  return TRUE;
+  return split_path(path, &fnode[0]) != NULL;
 }
 
 BOOL fcbmatch(const char *fcbname1, const char *fcbname2)
@@ -387,18 +274,23 @@ BOOL fcbmatch(const char *fcbname1, const char *fcbname2)
   return memcmp(fcbname1, fcbname2, FNAME_SIZE + FEXT_SIZE) == 0;
 }
 
-STATIC BOOL find_fname(f_node_ptr fnp, char *fcbname, int attr)
+STATIC int find_fname(const char *path, int attr, f_node_ptr fnp)
 {
+  /* check for leading backslash and open the directory given that */
+  /* contains the file given by path.                              */
+  if ((fnp = split_path(path, fnp)) == NULL)
+    return DE_PATHNOTFND;
+
   while (dir_read(fnp) == 1)
   {
-    if (fcbmatch(fnp->f_dir.dir_name, fcbname)
+    if (fcbmatch(fnp->f_dir.dir_name, fnp->f_dmp->dm_name_pat)
         && (fnp->f_dir.dir_attrib & ~(D_RDONLY | D_ARCHIVE | attr)) == 0)
     {
-      return TRUE;
+      return SUCCESS;
     }
-    fnp->f_diroff++;
+    fnp->f_dmp->dm_entry++;
   }
-  return FALSE;
+  return DE_FILENOTFND;
 }
 
 /* Description.
@@ -406,40 +298,35 @@ STATIC BOOL find_fname(f_node_ptr fnp, char *fcbname, int attr)
  *  pointed by fnp, fnode isn't modified (I hope).
  * Return value. 
  *  SUCCESS     - completed successfully.
- *  DE_BLKINVLD - error occured, fnode is released.
+ *  DE_ACCESS   - error occurred, fnode is released.
  * input: fnp with valid non-LFN directory entry, not equal to '..' or
  *  '.'
  */
 COUNT remove_lfn_entries(f_node_ptr fnp)
 {
-  unsigned original_diroff = fnp->f_diroff;
+  unsigned original_diroff = fnp->f_dmp->dm_entry;
 
   while (TRUE)
   {
-    if (fnp->f_diroff == 0)
+    if (fnp->f_dmp->dm_entry == 0)
       break;
-    fnp->f_diroff--;
-    if (dir_read(fnp) <= 0) {
-      dir_close(fnp);
-      return DE_BLKINVLD;
-    }
+    fnp->f_dmp->dm_entry--;
+    if (dir_read(fnp) <= 0)
+      return DE_ACCESS;
     if (fnp->f_dir.dir_attrib != D_LFN)
       break;
     fnp->f_dir.dir_name[0] = DELETED;
-    fnp->f_flags |= F_DMOD;
-    if (!dir_write(fnp)) return DE_BLKINVLD;
+    if (!dir_write(fnp)) return DE_ACCESS;
   }
-  fnp->f_diroff = original_diroff;
-  if (dir_read(fnp) <= 0) {
-    dir_close(fnp);
-    return DE_BLKINVLD;
-  }
+  fnp->f_dmp->dm_entry = original_diroff;
+  if (dir_read(fnp) <= 0)
+    return DE_ACCESS;
 
   return SUCCESS;
 }
 
     /* /// Added - Ron Cemer */
-    /* If more than one f_node has a file open, and a write
+    /* If more than one SFT has a file open, and a write
        occurs, this function must be called to propagate the
        results of that write to the other f_nodes which have
        that file open.  Note that this function only has an
@@ -447,58 +334,67 @@ COUNT remove_lfn_entries(f_node_ptr fnp)
        reasons, since DOS without SHARE does not share changes
        between two or more open instances of the same file
        unless these instances were generated by dup() or dup2(). */
-STATIC void merge_file_changes(f_node_ptr fnp, int collect)
+STATIC int merge_file_changes(f_node_ptr fnp, int collect)
 {
-  f_node_ptr fnp2;
-  int i, fd;
+  int i, j;
+  sft FAR *sftp;
+  sfttbl FAR *sp;
 
-  if (!IsShareInstalled())
-    return;
+  if (!IsShareInstalled(FALSE))
+    return SUCCESS;
 
-  fd = xlt_fnp(fnp);
-  fnp2 = get_near_f_node();
-  for (i = 0; i < f_nodes_cnt; i++)
+  i = 0;
+  for (sp = sfthead; sp != (sfttbl FAR *) - 1; sp = sp->sftt_next)
   {
-    fmemcpy(fnp2, &f_nodes[i], sizeof(*fnp2));
-    if ((fnp != (f_node_ptr) 0)
-        && (i != fd)
-        && (fnp->f_count > 0) && (is_same_file(fnp, fnp2)))
+    for(j = sp->sftt_count, sftp = sp->sftt_table; --j >= 0; sftp++, i++)
     {
-      if (collect)
+      if (i != fnp->f_sft_idx && sftp->sft_count != 0
+          && fnp->f_dpb == sftp->sft_dcb
+          && (fnp->f_dir.dir_attrib & D_VOLID) == 0
+          && (sftp->sft_attrib & D_VOLID) == 0
+          && fnp->f_diridx == sftp->sft_diridx
+          && fnp->f_dirsector == sftp->sft_dirsector
+        ) /* same file, but different FD */
       {
-        /* We're collecting file changes from any other
-           f_node which refers to this file. */
-        if (fnp2->f_mode != RDONLY)
+        if (collect == -1)
         {
-          memcpy(&fnp->f_dir, &fnp2->f_dir, sizeof(struct dirent));
-          break;
+          /* set attrib: close open files */
+          int rc = DosCloseSft(i, FALSE);
+          if (rc != SUCCESS)
+            return rc;
         }
-      }
-      else
-      {
-        /* We just made changes to this file, so we are
-           distributing these changes to the other f_nodes
-           which refer to this file. */
-        memcpy(&fnp2->f_dir, &fnp->f_dir, sizeof(struct dirent));
-        fmemcpy(&f_nodes[i], fnp2, sizeof(*fnp2));
+        else if (collect)
+        {
+          /* We're collecting file changes from any other
+             SFT which refers to this file. */
+          if ((sftp->sft_mode & O_ACCMODE) != RDONLY)
+          {
+            setdstart(fnp->f_dpb, &fnp->f_dir, sftp->sft_stclust);
+            fnp->f_dir.dir_size = sftp->sft_size;
+            fnp->f_dir.dir_date = sftp->sft_date;
+            fnp->f_dir.dir_time = sftp->sft_time;
+            return SUCCESS;
+          }
+        }
+        else
+        {
+          /* We just made changes to this file, so we are
+             distributing these changes to the other f_nodes
+             which refer to this file. */
+          sftp->sft_stclust = getdstart(fnp->f_dpb, &fnp->f_dir);
+          sftp->sft_size = fnp->f_dir.dir_size;
+          sftp->sft_date = fnp->f_dir.dir_date;
+          sftp->sft_time = fnp->f_dir.dir_time;
+        }
       }
     }
   }
-  release_near_f_node(fnp2);
+  return SUCCESS;
 }
 
-    /* /// Added - Ron Cemer */
-STATIC int is_same_file(f_node_ptr fnp1, f_node_ptr fnp2)
+void dos_merge_file_changes(int fd)
 {
-  return
-      (fnp1->f_dpb->dpb_unit == fnp2->f_dpb->dpb_unit)
-      && (fnp1->f_dpb->dpb_subunit == fnp2->f_dpb->dpb_subunit)
-      && (fcbmatch(fnp1->f_dir.dir_name, fnp2->f_dir.dir_name))
-      && ((fnp1->f_dir.dir_attrib & D_VOLID) == 0)
-      && ((fnp2->f_dir.dir_attrib & D_VOLID) == 0)
-      && (fnp1->f_diroff == fnp2->f_diroff)
-      && (fnp1->f_dirstart == fnp2->f_dirstart)
-      && (fnp1->f_dpb == fnp2->f_dpb);
+  merge_file_changes(sft_to_fnode(fd), FALSE);
 }
 
 STATIC COUNT delete_dir_entry(f_node_ptr fnp)
@@ -517,8 +413,8 @@ STATIC COUNT delete_dir_entry(f_node_ptr fnp)
   /* The directory has been modified, so set the  */
   /* bit before closing it, allowing it to be     */
   /* updated                                      */
-  fnp->f_flags |= F_DMOD;
-  dir_close(fnp);
+  if (!dir_write(fnp))
+    return DE_ACCESS;
 
   /* SUCCESSful completion, return it             */
   return SUCCESS;
@@ -526,127 +422,81 @@ STATIC COUNT delete_dir_entry(f_node_ptr fnp)
 
 COUNT dos_delete(BYTE * path, int attrib)
 {
-  REG f_node_ptr fnp;
-  char fcbname[FNAME_SIZE + FEXT_SIZE];
-
-  /* first split the passed dir into components (i.e. -   */
-  /* path to new directory and name of new directory      */
-  if ((fnp = split_path(path, fcbname)) == NULL)
-  {
-    return DE_PATHNOTFND;
-  }
+  REG f_node_ptr fnp = &fnode[0];
 
   /* Check that we don't have a duplicate name, so if we  */
   /* find one, it's an error.                             */
-  if (find_fname(fnp, fcbname, attrib))
+  int ret = find_fname(path, attrib, fnp);
+  if (ret == SUCCESS)
   {
     /* Do not delete directories or r/o files       */
     /* lfn entries and volume labels are only found */
     /* by find_fname() if attrib is set to a        */
     /* special value                                */	  
     if (fnp->f_dir.dir_attrib & (D_RDONLY | D_DIR))
-    {
-      dir_close(fnp);
       return DE_ACCESS;
-    }
 
     return delete_dir_entry(fnp);
   }
   else
-  {
     /* No such file, return the error               */
-    dir_close(fnp);
-    return DE_FILENOTFND;
-  }
+    return ret;
 }
 
 COUNT dos_rmdir(BYTE * path)
 {
   REG f_node_ptr fnp;
-  REG f_node_ptr fnp1;
-  BOOL found;
-  char fcbname[FNAME_SIZE + FEXT_SIZE];
 
   /* prevent removal of the current directory of that drive */
   register struct cds FAR *cdsp = get_cds(path[0] - 'A');
   if (!fstrcmp(path, cdsp->cdsCurrentPath))
     return DE_RMVCUDIR;
 
+  /* Check that we're not trying to remove the root!      */
+  if (path[2] == '\\' && path[3] == '\0')
+    return DE_ACCESS;
+
+  /* Check that the directory is empty. Only the  */
+  /* "." and ".." are permissable.                */
+  fnp = dir_open(path, FALSE, &fnode[0]);
+  if (fnp == NULL)
+    return DE_PATHNOTFND;
+
+  /* Directories may have attributes, but if other than 'archive'      */
+  /* or 'read only' then deny i.e. do not allow (SYSTEM|HIDDEN)        */
+  /* directory to be deleted.                                          */
+  if (fnp->f_dir.dir_attrib & ~(D_DIR | D_RDONLY | D_ARCHIVE))
+    return DE_ACCESS;
+
+  dir_read(fnp);
+  /* 1st entry should be ".", else directory corrupt or not empty */
+  if (fnp->f_dir.dir_name[0] != '.' || fnp->f_dir.dir_name[1] != ' ')
+    return DE_ACCESS;
+
+  fnp->f_dmp->dm_entry++;
+  dir_read(fnp);
+  /* second entry should be ".." */
+  if (fnp->f_dir.dir_name[0] != '.' || fnp->f_dir.dir_name[1] != '.')
+    return DE_ACCESS;
+
+  /* Now search through the directory and make certain */
+  /* that there are no entries                         */
+  fnp->f_dmp->dm_entry++;
+  while (dir_read(fnp) == 1)
+  {
+    /* If anything was found, exit with an error.   */
+    if (fnp->f_dir.dir_name[0] != DELETED && fnp->f_dir.dir_attrib != D_LFN)
+      return DE_ACCESS;
+    fnp->f_dmp->dm_entry++;
+  }
+
   /* next, split the passed dir into components (i.e. -   */
   /* path to new directory and name of new directory      */
-  if ((fnp = split_path(path, fcbname)) == NULL)
-  {
+  if (find_fname(path, D_ALL, fnp) != SUCCESS)
+    /* this error should not happen because dir_open() succeeded above */
     return DE_PATHNOTFND;
-  }
 
-  /* Check that we don't have a duplicate name, so if we  */
-  /* find one, it's an error.                             */
-  if (find_fname(fnp, fcbname, D_ALL))
-  {
-    /* Check if it's really a directory */
-    if (!(fnp->f_dir.dir_attrib & D_DIR))
-    {
-      dir_close(fnp);
-      return DE_ACCESS;
-    }
-
-    /* Check that the directory is empty. Only the  */
-    /* "." and ".." are permissable.                */
-    fnp->f_flags &= ~F_DMOD;
-    fnp1 = dir_open(path);
-    if (fnp1 == NULL)
-    {
-      dir_close(fnp);
-      return DE_ACCESS;
-    }
-    
-    dir_read(fnp1);
-    if (fnp1->f_dir.dir_name[0] != '.' || fnp1->f_dir.dir_name[1] != ' ')
-    {
-      dir_close(fnp);
-      return DE_ACCESS;
-    }
-
-    fnp1->f_diroff++;
-    dir_read(fnp1);
-    if (fnp1->f_dir.dir_name[0] != '.' || fnp1->f_dir.dir_name[1] != '.')
-    {
-      dir_close(fnp);
-      return DE_ACCESS;
-    }
-
-    /* Now search through the directory and make certain    */
-    /* that there are no entries.                           */
-    found = FALSE;
-    fnp1->f_diroff++;
-    while (dir_read(fnp1) == 1)
-    {
-      if (fnp1->f_dir.dir_name[0] == '\0')
-        break;
-      if (fnp1->f_dir.dir_name[0] != DELETED
-          && fnp1->f_dir.dir_attrib != D_LFN)
-      {
-        found = TRUE;
-        break;
-      }
-      fnp1->f_diroff++;
-    }
-
-    dir_close(fnp1);
-    /* If anything was found, exit with an error.   */
-    if (found)
-    {
-      dir_close(fnp);
-      return DE_ACCESS;
-    }
-    return delete_dir_entry(fnp);
-  }
-  else
-  {
-    /* No such file, return the error               */
-    dir_close(fnp);
-    return DE_FILENOTFND;
-  }
+  return delete_dir_entry(fnp);
 }
 
 COUNT dos_rename(BYTE * path1, BYTE * path2, int attrib)
@@ -654,70 +504,63 @@ COUNT dos_rename(BYTE * path1, BYTE * path2, int attrib)
   REG f_node_ptr fnp1;
   REG f_node_ptr fnp2;
   COUNT ret;
-  char fcbname[FNAME_SIZE + FEXT_SIZE];
+  char *fcbname;
 
   /* prevent renaming of the current directory of that drive */
   register struct cds FAR *cdsp = get_cds(path1[0] - 'A');
   if (!fstrcmp(path1, cdsp->cdsCurrentPath))
     return DE_RMVCUDIR;
 
-  /* first split the passed target into compnents (i.e. - path to */
-  /* new file name and name of new file name                      */
-  if ((fnp2 = split_path(path2, fcbname)) == NULL)
-  {
-    return DE_PATHNOTFND;
-  }
+  /* first check if the source file exists                        */
+  fnp1 = &fnode[0];
+  ret = find_fname(path1, attrib, fnp1);
+  if (ret != SUCCESS)
+    return ret;
 
   /* Check that we don't have a duplicate name, so if we find     */
   /* one, it's an error.                                          */
-  if (find_fname(fnp2, fcbname, attrib))
+  fnp2 = &fnode[1];
+  ret = find_fname(path2, attrib, fnp2);
+  if (ret != DE_FILENOTFND)
+    return ret == SUCCESS ? DE_ACCESS : ret;
+
+  fcbname = fnp2->f_dmp->dm_name_pat;
+  if (fnp1->f_dmp->dm_dircluster == fnp2->f_dmp->dm_dircluster)
   {
-    dir_close(fnp2);
-    return DE_ACCESS;
+    /* rename in the same directory: change the directory entry in-place */
+    fnp2 = fnp1;
+    if ((ret = remove_lfn_entries(fnp1)) < 0)
+      return ret;
   }
-
-  /* next split the passed source into compnents (i.e. - path to  */
-  /* old file name and name of old file name                      */
-  if ((fnp1 = split_path(path1, fcbname)) == NULL)
+  else
   {
-    dir_close(fnp2);
-    return DE_PATHNOTFND;
+    /* do not allow to rename directories between different directories  */
+    if (fnp1->f_dir.dir_attrib & D_DIR)
+      return DE_ACCESS;
+
+    /* create new entry in other directory */
+    ret = alloc_find_free(fnp2, path2);
+    if (ret != SUCCESS)
+      return ret;
+
+    if ((ret = remove_lfn_entries(fnp1)) < 0)
+      return ret;
+
+    /* init fnode for new file name to match old file name */
+    memcpy(&fnp2->f_dir, &fnp1->f_dir, sizeof(struct dirent));
+
+    /* Ok, so we can delete this one. Save the file info.           */
+    *(fnp1->f_dir.dir_name) = DELETED;
+
+    if (!dir_write(fnp1))
+      return DE_ACCESS;
   }
-
-  if (!find_fname(fnp1, fcbname, attrib))
-  {
-    /* No such file, return the error                       */
-    dir_close(fnp1);
-    dir_close(fnp2);
-    return DE_FILENOTFND;
-  }
-
-  ret = alloc_find_free(fnp2, path2, fcbname);
-  if (ret != SUCCESS) {
-    dir_close(fnp1);
-    return ret;
-  }
-
-  if ((ret = remove_lfn_entries(fnp1)) < 0)
-    return ret;
-
-  memcpy(&fnp2->f_dir, &fnp1->f_dir, sizeof(struct dirent));
 
   /* put the fnode's name into the directory.                     */
   memcpy(fnp2->f_dir.dir_name, fcbname, FNAME_SIZE + FEXT_SIZE);
 
-  /* The directory has been modified, so set the bit before       */
-  /* closing it, allowing it to be updated.                       */
-  fnp1->f_flags = fnp2->f_flags = F_DMOD | F_DDIR;
-
-  /* Ok, so we can delete this one. Save the file info.           */
-  *(fnp1->f_dir.dir_name) = DELETED;
-
-  dir_close(fnp1);
-  dir_close(fnp2);
-
   /* SUCCESSful completion, return it                             */
-  return SUCCESS;
+  return dir_write(fnp2) ? SUCCESS : DE_ACCESS;
 }
 
 /*                                                              */
@@ -730,17 +573,18 @@ STATIC VOID wipe_out_clusters(struct dpb FAR * dpbp, CLUSTER st)
   /* Loop from start until either a FREE entry is         */
   /* encountered (due to a fractured file system) of the  */
   /* last cluster is encountered.                         */
-  while (st != LONG_LAST_CLUSTER)
+  while (st != LONG_LAST_CLUSTER) /* remove clusters at start until empty */
   {
     /* get the next cluster pointed to              */
     next = next_cluster(dpbp, st);
 
     /* just exit if a damaged file system exists    */
-    if (next == FREE || next == 1)
+    if (next <= 1)
       return;
 
     /* zap the FAT pointed to                       */
-    link_fat(dpbp, st, FREE);
+    if (link_fat(dpbp, st, FREE) != SUCCESS) /* nonfree->free */
+      return; /* better abort on error */
 
     /* and the start of free space pointer          */
 #ifdef WITHFAT32
@@ -751,7 +595,7 @@ STATIC VOID wipe_out_clusters(struct dpb FAR * dpbp, CLUSTER st)
     }
     else
 #endif
-    if ((dpbp->dpb_cluster == UNKNCLUSTER) || (dpbp->dpb_cluster > st))
+    if ((dpbp->dpb_cluster == UNKNCLUSTER) || (dpbp->dpb_cluster > (UWORD)st))
       dpbp->dpb_cluster = (UWORD)st;
 
     /* and just follow the linked list              */
@@ -763,14 +607,16 @@ STATIC VOID wipe_out_clusters(struct dpb FAR * dpbp, CLUSTER st)
 #endif
 }
 
-/*                                                              */
 /* wipe out all FAT entries for create, delete, etc.            */
-/*                                                              */
+/* called by delete_dir_entry and dos_open open in O_TRUNC mode */
 STATIC VOID wipe_out(f_node_ptr fnp)
 {
   /* if not already free and valid file, do it */
-  if (fnp && !checkdstart(fnp->f_dpb, &fnp->f_dir, FREE))
-    wipe_out_clusters(fnp->f_dpb, getdstart(fnp->f_dpb, &fnp->f_dir));
+  CLUSTER cluster = getdstart(fnp->f_dpb, &fnp->f_dir);
+  if (cluster != FREE)
+    wipe_out_clusters(fnp->f_dpb, cluster);
+  /* no flushing here: could get lost chain or "crosslink seed" but */
+  /* it would be annoying if mass-deletes could not use BUFFERS...  */
 }
 
 STATIC BOOL find_free(f_node_ptr fnp)
@@ -781,19 +627,17 @@ STATIC BOOL find_free(f_node_ptr fnp)
   {
     if (fnp->f_dir.dir_name[0] == DELETED)
       return TRUE;
-    fnp->f_diroff++;
+    fnp->f_dmp->dm_entry++;
   }
   return rc >= 0;
 }
 
-/* alloc_find_free: resets the directory by a close followed by   */
-/* an open. Then finds a spare directory entry and if not         */
+/* alloc_find_free: resets the directory                          */
+/* Then finds a spare directory entry and if not                  */
 /* available, tries to extend the directory.                      */
-STATIC int alloc_find_free(f_node_ptr fnp, char *path, char *fcbname)
+STATIC int alloc_find_free(f_node_ptr fnp, char *path)
 {
-  fnp->f_flags &= ~F_DMOD;
-  dir_close(fnp);
-  fnp = split_path(path, fcbname);
+  fnp = split_path(path, fnp);
 
   /* Get a free f_node pointer so that we can use */
   /* it in building the new file.                 */
@@ -801,10 +645,8 @@ STATIC int alloc_find_free(f_node_ptr fnp, char *path, char *fcbname)
   /* find an empty slot, we need to abort.        */
   if (find_free(fnp) == 0)
   {
-    if (fnp->f_dirstart == 0)
+    if (fnp->f_dmp->dm_dircluster == 0)
     {
-      fnp->f_flags &= ~F_DMOD;
-      dir_close(fnp);
       return DE_TOOMANY;
     }
     else
@@ -831,8 +673,7 @@ date dos_getdate(void)
   /* First - get the system date set by either the user   */
   /* on start-up or the CMOS clock                        */
   DosGetDate(&dd);
-  /* Convert to FAT date format: yyyy yyym mmmd dddd (yyyyyyy=year-1980) */
-  return ((dd.year - 1980) << 9) | (dd.month << 5) | dd.monthday;
+  return DT_ENCODE(dd.month, dd.monthday, dd.year - EPOCH_YEAR);
 }
 
 /*                                                              */
@@ -845,108 +686,7 @@ time dos_gettime(void)
   /* First - get the system time set by either the user   */
   /* on start-up or the CMOS clock                        */
   DosGetTime(&dt);
-  /* Convert to FAT time format: hhhh hmmm mmmd dddd (d = double second) */
-  return (dt.hour << 11) | (dt.minute << 5) | (dt.second >> 1);
-}
-
-/*                                                              */
-/* dos_getftime for the file time                               */
-/*                                                              */
-COUNT dos_getftime(COUNT fd, date FAR * dp, time FAR * tp)
-{
-  f_node_ptr fnp;
-
-  /* Translate the fd into an fnode pointer, since all internal   */
-  /* operations are achieved through fnodes.                      */
-  fnp = xlt_fd(fd);
-
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit        */
-  /* note: an invalid fd is indicated by a 0 return               */
-  if (fnp == (f_node_ptr) 0)
-    return DE_INVLDHNDL;
-
-  /* Get the date and time from the fnode and return              */
-  *dp = fnp->f_dir.dir_date;
-  *tp = fnp->f_dir.dir_time;
-
-  release_near_f_node(fnp);
-  return SUCCESS;
-}
-
-/*                                                              */
-/* dos_setftime for the file time                               */
-/*                                                              */
-COUNT dos_setftime(COUNT fd, date dp, time tp)
-{
-  f_node_ptr fnp;
-
-  /* Translate the fd into an fnode pointer, since all internal   */
-  /* operations are achieved through fnodes.                      */
-  fnp = xlt_fd(fd);
-
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit        */
-  /* note: an invalid fd is indicated by a 0 return               */
-  if (fnp == (f_node_ptr) 0)
-    return DE_INVLDHNDL;
-
-  /* Set the date and time from the fnode and return              */
-  fnp->f_dir.dir_date = dp;
-  fnp->f_dir.dir_time = tp;
-  /* mark file as modified and set this date upon closing */
-  fnp->f_flags |= F_DMOD | F_DDATE;
-
-  save_far_f_node(fnp);
-  return SUCCESS;
-}
-
-/*                                                              */
-/* dos_getfsize for the file time                               */
-/*                                                              */
-ULONG dos_getfsize(COUNT fd)
-{
-  f_node_ptr fnp;
-
-  /* Translate the fd into an fnode pointer, since all internal   */
-  /* operations are achieved through fnodes.                      */
-  fnp = xlt_fd(fd);
-
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit        */
-  /* note: an invalid fd is indicated by a 0 return               */
-  if (fnp == (f_node_ptr) 0)
-    return (ULONG)-1l;
-
-  /* Return the file size                                         */
-  release_near_f_node(fnp);
-  return fnp->f_dir.dir_size;
-}
-
-/*                                                              */
-/* dos_setfsize for the file time                               */
-/*                                                              */
-BOOL dos_setfsize(COUNT fd, LONG size)
-{
-  f_node_ptr fnp;
-
-  /* Translate the fd into an fnode pointer, since all internal   */
-  /* operations are achieved through fnodes.                      */
-  fnp = xlt_fd(fd);
-
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit        */
-  /* note: an invalid fd is indicated by a 0 return               */
-  if (fnp == (f_node_ptr) 0)
-    return FALSE;
-
-  /* Change the file size                                         */
-  fnp->f_dir.dir_size = size;
-
-  merge_file_changes(fnp, FALSE);       /* /// Added - Ron Cemer */
-  save_far_f_node(fnp);
-
-  return TRUE;
+  return time_encode(&dt);
 }
 
 /*                                                              */
@@ -954,7 +694,7 @@ BOOL dos_setfsize(COUNT fd, LONG size)
 /*                                                              */
 STATIC CLUSTER find_fat_free(f_node_ptr fnp)
 {
-  REG CLUSTER idx, size;
+  REG CLUSTER idx, size, cluster;
   struct dpb FAR *dpbp = fnp->f_dpb;
 
 #ifdef DISPLAY_GETBLOCK
@@ -979,37 +719,68 @@ STATIC CLUSTER find_fat_free(f_node_ptr fnp)
 
   /* Search the FAT table looking for the first free      */
   /* entry.                                               */
-  for (; idx <= size; idx++)
+  cluster = idx;
+  for (;;)
   {
+#ifdef CHECK_FAT_DURING_CLUSTER_ALLOC /* slower but nice side effect ;-) */
     if (next_cluster(dpbp, idx) == FREE)
+#else
+    if (is_free_cluster(dpbp, idx))
+#endif
+    {
+      cluster = idx;
       break;
+    }
+    idx++;
+    /* wrap the search just in case there are free clusters before */
+    /* dpbp->dpb_(x)cluster (the fsinfo entry is just a hint!)     */
+    if (idx > size) idx = 2;
+    if (idx == cluster) {
+      /* No empty clusters, disk is FULL!                     */
+      cluster = UNKNCLUSTER;
+      idx = LONG_LAST_CLUSTER;
+      break;
+    }
   }
 
 #ifdef WITHFAT32
   if (ISFAT32(dpbp))
   {
-    dpbp->dpb_xcluster = idx;
-    if (idx > size)
-    {
-      /* No empty clusters, disk is FULL!                     */
-      dpbp->dpb_xcluster = UNKNCLUSTER;
-      idx = LONG_LAST_CLUSTER;
-    }
+    dpbp->dpb_xcluster = cluster;
     /* return the free entry                                */
     write_fsinfo(dpbp);
     return idx;
   }
 #endif
 
-  dpbp->dpb_cluster = (UWORD)idx;
-  if ((UWORD)idx > (UWORD)size)
-  {
-    /* No empty clusters, disk is FULL!                     */
-    dpbp->dpb_cluster = UNKNCLUSTER;
-    idx = LONG_LAST_CLUSTER;
-  }
+  dpbp->dpb_cluster = (UWORD)cluster;
   /* return the free entry                                */
   return idx;
+}
+
+/* clear out the blocks in the cluster for a directory */
+STATIC int clear_dir(f_node_ptr fnp, CLUSTER cluster)
+{
+  int idx;
+  for (idx = 0; idx <= fnp->f_dpb->dpb_clsmask; idx++)
+  {
+    struct buffer FAR *bp;
+
+    /* as we are overwriting it completely, don't read first */
+    bp = getblockOver(clus2phys(cluster, fnp->f_dpb) + idx,
+                      fnp->f_dpb->dpb_unit);
+#ifdef DISPLAY_GETBLOCK
+    printf("DIR (clear_dir)\n");
+#endif
+    if (bp == NULL)
+      return DE_ACCESS;
+    fmemset(bp->b_buffer, 0, BUFFERSIZE);
+    bp->b_flag |= BFR_DIRTY | BFR_VALID;
+
+    if (idx != 0)
+      bp->b_flag |= BFR_UNCACHE;        /* needs not be cached */
+  }
+  return SUCCESS;
 }
 
 /*                                                              */
@@ -1019,19 +790,8 @@ STATIC CLUSTER find_fat_free(f_node_ptr fnp)
 COUNT dos_mkdir(BYTE * dir)
 {
   REG f_node_ptr fnp;
-  REG COUNT idx;
-  struct buffer FAR *bp;
-  struct dpb FAR *dpbp;
   CLUSTER free_fat, parent;
   COUNT ret;
-  char fcbname[FNAME_SIZE + FEXT_SIZE];
-
-  /* first split the passed dir into components (i.e. -   */
-  /* path to new directory and name of new directory      */
-  if ((fnp = split_path(dir, fcbname)) == NULL)
-  {
-    return DE_PATHNOTFND;
-  }
 
   /* check that the resulting combined path does not exceed
      the 67 MAX_CDSPATH limit. this leads to problems:
@@ -1042,22 +802,18 @@ COUNT dos_mkdir(BYTE * dir)
      is lost forever
    */
   if (strlen(dir) >= MAX_CDSPATH)  /* dir is already output of "truename" */
-  {
-    dir_close(fnp);
     return DE_PATHNOTFND;
-  }
 
   /* Check that we don't have a duplicate name, so if we  */
   /* find one, it's an error.                             */
-  if (find_fname(fnp, fcbname, D_ALL))
-  {
-    dir_close(fnp);
-    return DE_ACCESS;
-  }
+  fnp = &fnode[0];
+  ret = find_fname(dir, D_ALL, fnp);
+  if (ret != DE_FILENOTFND)
+    return ret == SUCCESS ? DE_ACCESS : ret;
 
-  parent = fnp->f_dirstart;
+  parent = fnp->f_dmp->dm_dircluster;
 
-  ret = alloc_find_free(fnp, dir, fcbname);
+  ret = alloc_find_free(fnp, dir);
   if (ret != SUCCESS)
     return ret;
 
@@ -1070,92 +826,59 @@ COUNT dos_mkdir(BYTE * dir)
   /* No empty clusters, disk is FULL! Translate into a    */
   /* useful error message.                                */
   if (free_fat == LONG_LAST_CLUSTER)
-  {
-    dir_close(fnp);
     return DE_HNDLDSKFULL;
-  }
 
-  /* Set the fnode to the desired mode                            */
-  fnp->f_mode = WRONLY;
+  init_direntry(&fnp->f_dir, D_DIR, free_fat, fnp->f_dmp->dm_name_pat);
 
-  init_direntry(&fnp->f_dir, D_DIR, free_fat, fcbname);
+  /* Mark the cluster in the FAT as used and create new dir there */
+  if (link_fat(fnp->f_dpb, free_fat, LONG_LAST_CLUSTER) != SUCCESS) /* free->last */
+    return DE_HNDLDSKFULL; /* should never happen */
 
-  fnp->f_flags = F_DMOD | F_DDIR;
+  /* clean out the new directory */
+  ret = clear_dir(fnp, free_fat);
+  if (ret != SUCCESS)
+    return ret;
 
-  fnp->f_offset = 0l;
+  /* Write the new directory entry                         */
+  if (!dir_write(fnp))
+    return DE_ACCESS;
 
-  /* Mark the cluster in the FAT as used                  */
-  dpbp = fnp->f_dpb;
-  link_fat(dpbp, free_fat, LONG_LAST_CLUSTER);
+  /* Craft the new directory. Note that if we're in a new  */
+  /* directory just under the root, ".." pointer is 0.     */
 
-  /* Craft the new directory. Note that if we're in a new */
-  /* directory just under the root, ".." pointer is 0.    */
-  /* as we are overwriting it completely, don't read first */
-  bp = getblockOver(clus2phys(free_fat, dpbp), dpbp->dpb_unit);
-#ifdef DISPLAY_GETBLOCK
-  printf("FAT (dos_mkdir)\n");
-#endif
-  if (bp == NULL)
-  {
-    dir_close(fnp);
-    return DE_BLKINVLD;
-  }
+  dir_init_fnode(fnp, free_fat);
+  fnp->f_dmp->dm_entry = 0;
+  find_free(fnp);
 
   /* Create the "." entry                                 */
-  init_direntry(&DirEntBuffer, D_DIR, free_fat, ".          ");
+  init_direntry(&fnp->f_dir, D_DIR, free_fat, ".          ");
 
   /* And put it out                                       */
-  putdirent(&DirEntBuffer, bp->b_buffer);
+  if (!dir_write(fnp))
+    return DE_ACCESS;
 
   /* create the ".." entry                                */
-  DirEntBuffer.dir_name[1] = '.';
+  if (!find_free(fnp) && ((ret = extend_dir(fnp)) != SUCCESS))
+    return ret;
 #ifdef WITHFAT32
-  if (ISFAT32(dpbp) && parent == dpbp->dpb_xrootclst)
+  if (ISFAT32(fnp->f_dpb) && parent == fnp->f_dpb->dpb_xrootclst)
   {
     parent = 0;
   }
 #endif
-  setdstart(dpbp, &DirEntBuffer, parent);
+  /* use . to allow the compiler to merge duplicate strings */
+  init_direntry(&fnp->f_dir, D_DIR, parent, ".          ");
+  fnp->f_dir.dir_name[1] = '.';
 
   /* and put it out                                       */
-  putdirent(&DirEntBuffer, &bp->b_buffer[DIRENT_SIZE]);
-
-  /* fill the rest of the block with zeros                */
-  fmemset(&bp->b_buffer[2 * DIRENT_SIZE], 0, BUFFERSIZE - 2 * DIRENT_SIZE);
-
-  /* Mark the block to be written out                     */
-  bp->b_flag |= BFR_DIRTY | BFR_VALID;
-
-  /* clear out the rest of the blocks in the cluster      */
-  for (idx = 1; idx <= dpbp->dpb_clsmask; idx++)
-  {
-
-    /* as we are overwriting it completely, don't read first */
-    bp = getblockOver(clus2phys(getdstart(dpbp, &fnp->f_dir), dpbp) + idx,
-                      dpbp->dpb_unit);
-#ifdef DISPLAY_GETBLOCK
-    printf("DIR (dos_mkdir)\n");
-#endif
-    if (bp == NULL)
-    {
-      dir_close(fnp);
-      return DE_BLKINVLD;
-    }
-    fmemset(bp->b_buffer, 0, BUFFERSIZE);
-    bp->b_flag |= BFR_DIRTY | BFR_VALID | BFR_UNCACHE; /* need not be cached */
-  }
-
-  /* flush the drive buffers so that all info is written  */
-  /* hazard: no error checking! */
-  flush_buffers(dpbp->dpb_unit);
-
-  /* Close the directory so that the entry is updated     */
-  fnp->f_flags |= F_DMOD;
-  dir_close(fnp);
+  if (!dir_write(fnp))
+    return DE_ACCESS;
 
   return SUCCESS;
 }
 
+/* extend a directory or file by exactly one cluster */
+/* only map_cluster calls this in a loop (for files) */
 STATIC CLUSTER extend(f_node_ptr fnp)
 {
   CLUSTER free_fat;
@@ -1168,62 +891,49 @@ STATIC CLUSTER extend(f_node_ptr fnp)
   if (free_fat == LONG_LAST_CLUSTER)
     return free_fat;
 
-  /* Now that we've found a free FAT entry, mark it as the last   */
-  /* entry and save.                                              */
-  if (fnp->f_cluster == FREE)
-    setdstart(fnp->f_dpb, &fnp->f_dir, free_fat);
-  else
-    link_fat(fnp->f_dpb, fnp->f_cluster, free_fat);
-  link_fat(fnp->f_dpb, free_fat, LONG_LAST_CLUSTER);
+  /* if 1a or 1b works but 2 fails, we get a pointer into an wrong FAT entry */
+  /* our new fattab.c checks should be able to trap the bad pointers for now */
+  if (link_fat(fnp->f_dpb, free_fat, LONG_LAST_CLUSTER) != SUCCESS) /* 2 */ /* free->last */
+      return LONG_LAST_CLUSTER; /* do not try 1a/1b if 2 did not work out */
+  /* if 2 works but 1a/1b fails, we only get a harmless lost cluster here */
 
-  /* Mark the directory so that the entry is updated              */
-  fnp->f_flags |= F_DMOD;
+  /* Now that we have found a free FAT entry, mark it as the last entry of */
+  /* the chain and save (note: BUFFERS cause nondeterministic write order) */
+  if (fnp->f_cluster == FREE) /* if the file leaves the empty state */
+    setdstart(fnp->f_dpb, &fnp->f_dir, free_fat); /* 1a */
+  else
+  {
+    /* let previously last chain element chain to newly allocated cluster! */
+    if (next_cluster(fnp->f_dpb, fnp->f_cluster) != LONG_LAST_CLUSTER)
+    {
+      /* we tried to "grow a file in the middle", f_node or FAT messed up? */
+      put_string("FAT chain size bad!\n");
+      return LONG_LAST_CLUSTER;
+    }
+    if (link_fat(fnp->f_dpb, fnp->f_cluster, free_fat) != SUCCESS) /* 1b */ /* last->used */
+      return LONG_LAST_CLUSTER; /* should never happen */
+  }
+
   return free_fat;
 }
 
 STATIC COUNT extend_dir(f_node_ptr fnp)
 {
-  REG COUNT idx;
-
+  int ret;
   CLUSTER cluster = extend(fnp);
   if (cluster == LONG_LAST_CLUSTER)
-  {
-    dir_close(fnp);
     return DE_HNDLDSKFULL;
-  }
 
-  /* clear out the blocks in the cluster      */
-  for (idx = 0; idx <= fnp->f_dpb->dpb_clsmask; idx++)
-  {
-    REG struct buffer FAR *bp;
-
-    /* as we are overwriting it completely, don't read first */
-    bp = getblockOver(clus2phys(cluster, fnp->f_dpb) + idx,
-                      fnp->f_dpb->dpb_unit);
-#ifdef DISPLAY_GETBLOCK
-    printf("DIR (extend_dir)\n");
-#endif
-    if (bp == NULL)
-    {
-      dir_close(fnp);
-      return DE_BLKINVLD;
-    }
-    fmemset(bp->b_buffer, 0, BUFFERSIZE);
-    bp->b_flag |= BFR_DIRTY | BFR_VALID;
-
-    if (idx != 0)
-      bp->b_flag |= BFR_UNCACHE;        /* needs not be cached */
-  }
+  ret = clear_dir(fnp, cluster);
+  if (ret != SUCCESS)
+    return ret;
 
   if (!find_free(fnp))
-  {
-    dir_close(fnp);
     return DE_HNDLDSKFULL;
-  }
 
   /* flush the drive buffers so that all info is written          */
-  /* hazard: no error checking! */
-  flush_buffers(fnp->f_dpb->dpb_unit);
+  if (!flush_buffers(fnp->f_dpb->dpb_unit))
+    return DE_ACCESS;
 
   return SUCCESS;
 
@@ -1232,7 +942,7 @@ STATIC COUNT extend_dir(f_node_ptr fnp)
 /* Description.
  *    Finds the cluster which contains byte at the fnp->f_offset offset and
  *  stores its number to the fnp->f_cluster. The search begins from the start of
- *  a file or a directory depending whether fnp->f_ddir is FALSE or TRUE
+ *  a file or a directory depending on whether the SFT index is valid
  *  and continues through the FAT chain until the target cluster is found.
  *  The mode can have only XFR_READ or XFR_WRITE values.
  *    In the XFR_WRITE mode map_cluster extends the FAT chain by creating
@@ -1281,8 +991,10 @@ COUNT map_cluster(REG f_node_ptr fnp, COUNT mode)
                          fnp->f_dpb->dpb_shftcnt);
   if (relcluster < fnp->f_cluster_offset)
   {
+    /* If seek is to earlier in file than current position, */
+    /* we have to follow chain from the beginning again...  */
     /* Set internal index and cluster size.                 */
-    fnp->f_cluster = (fnp->f_flags & F_DDIR) ? fnp->f_dirstart :
+    fnp->f_cluster = fnp->f_sft_idx == 0xff ? fnp->f_dmp->dm_dircluster :
         getdstart(fnp->f_dpb, &fnp->f_dir);
     fnp->f_cluster_offset = 0;
   }
@@ -1298,7 +1010,7 @@ COUNT map_cluster(REG f_node_ptr fnp, COUNT mode)
   {
     /* get next cluster in the chain */
     cluster = next_cluster(fnp->f_dpb, fnp->f_cluster);
-    if (cluster == 1)
+    if (cluster <= 1) /* 1/error or 0/FREE chain into the void */
       return DE_SEEK;
 
     /* If this is a read and the next is a LAST_CLUSTER,               */
@@ -1328,7 +1040,7 @@ COUNT map_cluster(REG f_node_ptr fnp, COUNT mode)
 }
 
 /* extends a file from f_dir.dir_size to f_offset              */
-/* Proper OS's write zeros in between, but DOS just adds       */
+/* Proper OSes write zeros in between, but DOS just adds       */
 /* garbage sectors, and lets the caller do the zero filling    */
 /* if you prefer you can have this enabled using               */
 /* #define WRITEZEROS 1                                        */
@@ -1365,18 +1077,27 @@ STATIC COUNT dos_extend(f_node_ptr fnp)
 
 #ifdef DSK_DEBUG
     printf("write %d links; dir offset %ld, cluster %d\n",
-           fnp->f_count, fnp->f_diroff, fnp->f_cluster);
+           fnp->f_count, fnp->f_dmp->dm_entry, fnp->f_cluster);
 #endif
 
     xfr_cnt = count < (ULONG) secsize - boff ?
         (UWORD) count : secsize - boff;
 
     /* get a buffer to store the block in */
-    bp = getblk(clus2phys(fnp->f_cluster, fnp->f_dpb) + sector,
-                    fnp->f_dpb->dpb_unit, boff == 0 && xfr_cnt == secsize);
+    if ((boff == 0) && (xfr_cnt == secsize))
+    {
+      bp = getblockOver(clus2phys(fnp->f_cluster, fnp->f_dpb) +
+                        sector, fnp->f_dpb->dpb_unit);
+
+    }
+    else
+    {
+      bp = getblock(clus2phys(fnp->f_cluster, fnp->f_dpb) + sector,
+                    fnp->f_dpb->dpb_unit);
+    }
     if (bp == NULL)
     {
-      return DE_BLKINVLD;
+      return DE_ACCESS;
     }
 
     /* set a block to zero                                  */
@@ -1467,7 +1188,9 @@ STATIC COUNT dos_extend(f_node_ptr fnp)
    dosfns.c */
 long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
 {
-  REG f_node_ptr fnp;
+  /* Translate the fd into an fnode pointer, since all internal   */
+  /* operations are achieved through fnodes.                      */
+  REG f_node_ptr fnp = sft_to_fnode(fd);
   REG struct buffer FAR *bp;
   UCOUNT xfr_cnt = 0;
   UCOUNT ret_cnt = 0;
@@ -1482,27 +1205,16 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
            fd, FP_SEG(buffer), FP_OFF(buffer), count);
   }
 #endif
-  /* Translate the fd into an fnode pointer, since all internal   */
-  /* operations are achieved through fnodes.                      */
-  fnp = xlt_fd(fd);
-
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit        */
-  /* note: an invalid fd is indicated by a 0 return               */
-  if (fnp == (f_node_ptr) 0)
-  {
-    return 0;
-  }
 
   if (mode==XFR_WRITE)
   {
     fnp->f_dir.dir_attrib |= D_ARCHIVE;
-    fnp->f_flags |= F_DMOD;       /* mark file as modified */
-    fnp->f_flags &= ~F_DDATE;     /* set date not valid any more */
+    /* mark file as modified and set date not valid any more */
+    fnp->f_flags &= ~(SFT_FCLEAN|SFT_FDATE); 
     
     if (dos_extend(fnp) != SUCCESS)
     {
-      save_far_f_node(fnp);
+      fnode_to_sft(fnp);
       return 0;
     }
   }
@@ -1525,9 +1237,11 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
     if (mode == XFR_WRITE)
     {
       fnp->f_dir.dir_size = fnp->f_offset;
-      shrink_file(fnp);
+      if (shrink_file(fnp) < 0) /* this is the only call to shrink_file... */
+        return DE_ACCESS;
+      /* why does empty write -always- truncate to current offset? */
     }
-    save_far_f_node(fnp);
+    fnode_to_sft(fnp);
     return 0;
   }
 
@@ -1544,10 +1258,9 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
     unsigned sector, boff;
 
     /* Do an EOF test and return whatever was transferred   */
-    /* but only for regular files.                          */
-    if (mode == XFR_READ && !(fnp->f_flags & F_DDIR) && (fnp->f_offset >= fnp->f_dir.dir_size))
+    if (mode == XFR_READ && fnp->f_offset >= fnp->f_dir.dir_size)
     {
-      save_far_f_node(fnp);
+      fnode_to_sft(fnp);
       return ret_cnt;
     }
 
@@ -1578,7 +1291,7 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
 #endif
     if (map_cluster(fnp, mode) != SUCCESS)
     {
-      save_far_f_node(fnp);
+      fnode_to_sft(fnp);
       return ret_cnt;
     }
     if (mode == XFR_WRITE)
@@ -1595,38 +1308,44 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
 
     /* see comments above */
 
-    if (!(fnp->f_flags & F_DDIR) && /* don't experiment with directories yet */
-        boff == 0)              /* complete sectors only */
+    if (boff == 0)              /* complete sectors only */
     {
       static ULONG startoffset;
       UCOUNT sectors_to_xfer, sectors_wanted;
 
       startoffset = fnp->f_offset;
-      sectors_wanted = (UCOUNT)(fnp->f_dir.dir_size - fnp->f_offset);
+      sectors_wanted = to_xfer;
 
       /* avoid EOF problems */
-      if (mode != XFR_READ || to_xfer <= sectors_wanted)
-        sectors_wanted = to_xfer;
+      if (mode == XFR_READ && to_xfer > fnp->f_dir.dir_size - fnp->f_offset)
+        sectors_wanted = (UCOUNT)(fnp->f_dir.dir_size - fnp->f_offset);
+      
       sectors_wanted /= secsize;
 
       if (sectors_wanted == 0)
         goto normal_xfer;
 
-      for (sectors_to_xfer = -sector; ; )
+      sectors_to_xfer = fnp->f_dpb->dpb_clsmask + 1 - sector;
+
+      sectors_to_xfer = min(sectors_to_xfer, sectors_wanted);
+
+      fnp->f_offset += sectors_to_xfer * secsize;
+
+      while (sectors_to_xfer < sectors_wanted)
       {
-        sectors_to_xfer += fnp->f_dpb->dpb_clsmask + 1;
-        sectors_to_xfer = min(sectors_to_xfer, sectors_wanted);
-        fnp->f_offset = startoffset + sectors_to_xfer * secsize;
-
-        if (sectors_to_xfer >= sectors_wanted)
-          break;
-
         if (map_cluster(fnp, mode) != SUCCESS)
           break;
 
         if (clus2phys(fnp->f_cluster, fnp->f_dpb) !=
             currentblock + sectors_to_xfer)
           break;
+
+        sectors_to_xfer += fnp->f_dpb->dpb_clsmask + 1;
+
+        sectors_to_xfer = min(sectors_to_xfer, sectors_wanted);
+
+        fnp->f_offset = startoffset + sectors_to_xfer * secsize;
+
       }
 
       xfr_cnt = sectors_to_xfer * secsize;
@@ -1643,7 +1362,7 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
                   mode == XFR_READ ? DSKREAD : DSKWRITE))
       {
         fnp->f_offset = startoffset;
-        save_far_f_node(fnp);
+        fnode_to_sft(fnp);
         return DE_ACCESS;
       }
 
@@ -1655,7 +1374,7 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
 
 #ifdef DSK_DEBUG
     printf("r/w %d links; dir offset %d, cluster %d, mode %x\n",
-           fnp->f_count, fnp->f_diroff, fnp->f_cluster, mode);
+           fnp->f_count, fnp->f_dmp->dm_entry, fnp->f_cluster, mode);
 #endif
 
     /* Get the block we need from cache                     */
@@ -1668,7 +1387,7 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
 #endif
     if (bp == NULL)             /* (struct buffer *)0 --> DS:0 !! */
     {
-      save_far_f_node(fnp);
+      fnode_to_sft(fnp);
       return ret_cnt;
     }
 
@@ -1678,7 +1397,7 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
     /* Then compare to what is left, since we can transfer  */
     /* a maximum of what is left.                           */
     xfr_cnt = min(to_xfer, secsize - boff);
-    if (!(fnp->f_flags & F_DDIR) && mode == XFR_READ)
+    if (mode == XFR_READ)
       xfr_cnt = (UWORD) min(xfr_cnt, fnp->f_dir.dir_size - fnp->f_offset);
 
     /* transfer a block                                     */
@@ -1721,52 +1440,8 @@ long rwblock(COUNT fd, VOID FAR * buffer, UCOUNT count, int mode)
       merge_file_changes(fnp, FALSE);     /* /// Added - Ron Cemer */
     }
   }
-  save_far_f_node(fnp);
+  fnode_to_sft(fnp);
   return ret_cnt;
-}
-
-/* Position the file pointer to the desired offset                      */
-/* Returns a long current offset or a negative error code               */
-LONG dos_lseek(COUNT fd, LONG foffset, COUNT origin)
-{
-  REG f_node_ptr fnp;
-
-  /* Translate the fd into a useful pointer                       */
-
-  fnp = xlt_fd(fd);
-
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit                */
-  /* note: an invalid fd is indicated by a 0 return               */
-
-  if (fnp == (f_node_ptr) 0)
-    return (LONG) DE_INVLDHNDL;
-
-  /* now do the actual lseek adjustment to the file poitner       */
-  switch (origin)
-  {
-      /* offset from beginning of file                                */
-    case SEEK_SET:
-      fnp->f_offset = (ULONG) foffset;
-      break;
-
-      /* offset from current location                                 */
-    case SEEK_CUR:
-      fnp->f_offset += foffset;
-      break;
-
-      /* offset from eof                                              */
-    case SEEK_END:
-      fnp->f_offset = fnp->f_dir.dir_size + foffset;
-      break;
-
-      /* default to an invalid function                               */
-    default:
-      release_near_f_node(fnp);
-      return (LONG) DE_INVLDFUNC;
-  }
-  save_far_f_node(fnp);
-  return fnp->f_offset;
 }
 
 /* returns the number of unused clusters */
@@ -1775,7 +1450,7 @@ CLUSTER dos_free(struct dpb FAR * dpbp)
   /* There's an unwritten rule here. All fs       */
   /* cluster start at 2 and run to max_cluster+2  */
   REG CLUSTER i;
-  REG CLUSTER cnt = 0;
+  REG CLUSTER cnt;
   CLUSTER max_cluster = dpbp->dpb_size;
 
 #ifdef WITHFAT32
@@ -1787,14 +1462,30 @@ CLUSTER dos_free(struct dpb FAR * dpbp)
   }
   else
 #endif
-  /* only for testing, limit returning cached entry to FAT32, ie always recalc */
-  if (/* ISFAT32(dpbp) && */(dpbp->dpb_nfreeclst != UNKNCLSTFREE))
+  if (dpbp->dpb_nfreeclst != UNKNCLSTFREE)
     return dpbp->dpb_nfreeclst;
 
+  cnt = 0;
   for (i = 2; i <= max_cluster; i++)
   {
-    if (next_cluster(dpbp, i) == 0)
+#ifdef CHECK_FAT_DURING_SPACE_CHECK /* slower but nice side effect ;-) */
+    if (next_cluster(dpbp, i) == FREE)
+#else
+    if (is_free_cluster(dpbp, i))
+#endif
+    {
+      if (cnt == 0)
+      {
+        /* update first free cluster number */
+#ifdef WITHFAT32
+        if (ISFAT32(dpbp))
+          dpbp->dpb_xcluster = i;
+        else
+#endif
+          dpbp->dpb_cluster = (UWORD)i;
+      }
       ++cnt;
+    }
   }
 #ifdef WITHFAT32
   if (ISFAT32(dpbp))
@@ -1812,130 +1503,63 @@ CLUSTER dos_free(struct dpb FAR * dpbp)
 int dos_cd(char * PathName)
 {
   f_node_ptr fnp;
-  struct cds FAR *cdsp = get_cds(PathName[0] - 'A');
-
-  if ((media_check(cdsp->cdsDpb) < 0))
-    return DE_INVLDDRV;
+  struct cds FAR *cdsp;
 
   /* now test for its existance. If it doesn't, return an error.  */
-  if ((fnp = dir_open(PathName)) == NULL)
+  if ((fnp = dir_open(PathName, FALSE, &fnode[0])) == NULL)
     return DE_PATHNOTFND;
 
   /* problem: RBIL table 01643 does not give a FAT32 field for the
      CDS start cluster. But we are not using this field ourselves */
-  cdsp->cdsStrtClst = (UWORD)fnp->f_dirstart;
-  dir_close(fnp);
+  cdsp = get_cds(PathName[0] - 'A');
+  cdsp->cdsStrtClst = (UWORD)fnp->f_dmp->dm_dircluster;
   return SUCCESS;
 }
 #endif
 
-/* try to allocate a near f_node                            */
-/* (there are just two of them, in the SDA)                 */
-f_node_ptr get_near_f_node(void)
-{
-  f_node_ptr fnp = fnode;
-  DDebugPrintf(("get_near_f_node: fnp is %p\n", fnp));
-  if (fnp->f_count && (++fnp)->f_count)
-    panic("more than two near fnodes requested at the same time!\n");
-  fnp->f_count++;
-  DDebugPrintf(("got near fnode, fnp->f_count=%i\n", fnp->f_count));
-  return fnp;
-}
-
-/* Try to allocate an f_node from the available files array */
-f_node_ptr get_f_node(void)
-{
-  REG int i;
-  f_node_ptr fnp = get_near_f_node();
-
-  if (fnp != (f_node_ptr)0)
-  {
-    FatFSDbgPrintf(("get_f_node: &f_nodes[0]=%p, f_nodes_cnt=%i\n", (void far *)&f_nodes, f_nodes_cnt));
-    for (i = 0; i < f_nodes_cnt; i++)
-    {
-      if (f_nodes[i].f_count == 0)
-      {
-        ++f_nodes[i].f_count;
-        fnode_fd[fnp - fnode] = i;
-        FatFSDbgPrintf(("f_nodes[%i].f_count=%i, fnode_fd[%i]=%i\n", \
-               i, f_nodes[i].f_count, (fnp-fnode), i));
-        return fnp;
-      }
-    }
-    release_near_f_node(fnp);
-    FatFSDbgPrintf(("get_f_node: failure finding free entry in f_nodes[]\n"));
-  }
-  else FatFSDbgPrintf(("get_f_node: get_near_fnode() failed, returned NULL\n"));
-  return (f_node_ptr) 0;
-}
-
-VOID release_f_node(f_node_ptr fnp)
-{
-  struct f_node FAR *fp = &f_nodes[xlt_fnp(fnp)];
-
-  FatFSDbgPrintf(("release_f_node: fp->f_count=%i\n", fp->f_count));
-
-  if (fp->f_count > 0)
-    --fp->f_count;
-  else
-    fp->f_count = 0;
-  release_near_f_node(fnp);
-}
-
 #ifndef IPL
-COUNT dos_getfattr_fd(COUNT fd)
-{
-  f_node_ptr fnp = xlt_fd(fd);
-
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit        */
-  /* note: an invalid fd is indicated by a 0 return               */
-  if (fnp == (f_node_ptr) 0)
-    return DE_TOOMANY;
-
-  release_near_f_node(fnp);
-  return fnp->f_dir.dir_attrib;
-}
-
 COUNT dos_getfattr(BYTE * name)
 {
-  COUNT result, fd;
-
-  fd = (short)dos_open(name, O_RDONLY | O_OPEN, 0);
-  if (fd < SUCCESS)
-    return fd;
-
-  result = dos_getfattr_fd(fd);
-  dos_close(fd);
-  return result;
+  f_node_ptr fnp = &fnode[0];
+  int ret = find_fname(name, D_ALL, fnp);
+  return ret == SUCCESS ? fnp->f_dir.dir_attrib : ret;
 }
 
 COUNT dos_setfattr(BYTE * name, UWORD attrp)
 {
-  COUNT fd;
   f_node_ptr fnp;
+  int rc;
 
-  /* JPP-If user tries to set VOLID or DIR bits, return error */
-  if ((attrp & (D_VOLID | D_DIR | 0xC0)) != 0)
+  /* JPP-If user tries to set VOLID or RESERVED bits, return error.
+     We used to also check for D_DIR here, but causes issues with deltree
+     which is trying to work around another issue.  So now we check
+     these here, and only report DE_ACCESS if user tries to set directory
+     bit on a non-directory entry.
+   */
+  if ((attrp & (D_VOLID | 0xC0)) != 0)
     return DE_ACCESS;
 
-  fd = (short)dos_open(name, O_RDONLY | O_OPEN, 0);
-  if (fd < SUCCESS)
-    return fd;
+  fnp = &fnode[0];
+  rc = find_fname(name, D_ALL, fnp);
+  if (rc != SUCCESS)
+    return rc;
 
-  fnp = xlt_fd(fd);
-  
+  /* if caller tries to set DIR on non-directory, return error */
+  if ((attrp & D_DIR) && !(fnp->f_dir.dir_attrib & D_DIR))
+    return DE_ACCESS;
+
   /* Set the attribute from the fnode and return          */
   /* clear all attributes but DIR and VOLID */
   fnp->f_dir.dir_attrib &= (D_VOLID | D_DIR);   /* JPP */
-    
+
   /* set attributes that user requested */
   fnp->f_dir.dir_attrib |= attrp;       /* JPP */
-  fnp->f_flags |= F_DMOD | F_DDATE;
-  merge_file_changes(fnp, FALSE);
-  save_far_f_node(fnp);
-  dos_close(fd);
-  return SUCCESS;
+
+  /* close open files in compat mode, otherwise there was a critical error */
+  rc = merge_file_changes(fnp, -1);
+  if (rc == SUCCESS && !dir_write(fnp))
+    rc = DE_ACCESS;
+  return rc;
 }
 #endif
 
@@ -1960,13 +1584,17 @@ VOID bpb_to_dpb(bpb FAR * bpbp, REG struct dpb FAR * dpbp)
   bpb sbpb;
 
   fmemcpy(&sbpb, bpbp, sizeof(sbpb));
-  for (shftcnt = 0; (sbpb.bpb_nsector >> shftcnt) > 1; shftcnt++)
-    ;
+  if (sbpb.bpb_nsector == 0) {
+    shftcnt = 8;
+  } else {
+    for (shftcnt = 0; (sbpb.bpb_nsector >> shftcnt) > 1; shftcnt++)
+      ;
+  }
   dpbp->dpb_shftcnt = shftcnt;
 
   dpbp->dpb_mdb = sbpb.bpb_mdesc;
   dpbp->dpb_secsize = sbpb.bpb_nbyte;
-  dpbp->dpb_clsmask = sbpb.bpb_nsector - 1;
+  dpbp->dpb_clsmask = (sbpb.bpb_nsector - 1) & 0xFF;
   dpbp->dpb_fatstrt = sbpb.bpb_nreserved;
   dpbp->dpb_fats = sbpb.bpb_nfat;
   dpbp->dpb_dirents = sbpb.bpb_ndirent;
@@ -2008,7 +1636,9 @@ ckok:;
         : sbpb.bpb_nfsect;
     dpbp->dpb_xcluster = UNKNCLUSTER;
     dpbp->dpb_xnfreeclst = XUNKNCLSTFREE;       /* number of free clusters */
+
     dpb16to32(dpbp);
+
     if (ISFAT32(dpbp))
     {
       dpbp->dpb_xflags = sbpb.bpb_xflags;
@@ -2067,90 +1697,97 @@ COUNT media_check(REG struct dpb FAR * dpbp)
     return DE_INVLDDRV;
 
   /* First test if anyone has changed the removable media         */
-  DDebugPrintf(("do media check...\n"));
   ret = rqblockio(C_MEDIACHK, dpbp);
   if (ret < SUCCESS)
-  {
-    FatFSDbgPrintf(("media_check: failed\n"));
     return ret;
-  }
 
-  DDebugPrintf(("mcr=%s, dpb_flags=%04xh\n", (MediaReqHdr.r_mcretcode==1)?"none":"possible", dpbp->dpb_flags));
   switch (MediaReqHdr.r_mcretcode | dpbp->dpb_flags)
   {
     case M_NOT_CHANGED:
       /* It was definitely not changed, so ignore it          */
-      DDebugPrintf(("media_check: no change\n"));
       return SUCCESS;
 
       /* If it is forced or the media may have changed,       */
       /* rebuild the bpb                                      */
     case M_DONT_KNOW:
-        /* hazard: no error checking! */
-      DDebugPrintf(("media_check: unknown\n"));
-      flush_buffers(dpbp->dpb_unit);
+      /* IBM PCDOS technical reference says to call BLDBPB if */
+      /* there are no used buffers                            */
+      if (dirty_buffers(dpbp->dpb_unit))
+        return SUCCESS;
 
       /* If it definitely changed, don't know (falls through) */
       /* or has been changed, rebuild the bpb.                */
- /* case M_CHANGED: */
+    /* case M_CHANGED: */
     default:
-      DDebugPrintf(("media_check: assumming changed\n"));
       setinvld(dpbp->dpb_unit);
       ret = rqblockio(C_BLDBPB, dpbp);
       if (ret < SUCCESS)
-      {
-        DebugPrintf(("media_check: build BPB failed\n"));
         return ret;
-      }
 #ifdef WITHFAT32
       /* extend dpb only for internal or FAT32 devices */
       bpb_to_dpb(MediaReqHdr.r_bpptr, dpbp,
-                 ISFAT32(dpbp) || FP_SEG(dpbp) == FP_SEG(&os_major));
+                 MediaReqHdr.r_bpptr->bpb_nfsect == 0 ||
+                 FP_SEG(dpbp) == FP_SEG(&os_major));
 #else
       bpb_to_dpb(MediaReqHdr.r_bpptr, dpbp);
 #endif
-      DDebugPrintf(("media_check: returning ok\n"));
       return SUCCESS;
   }
 }
 
-/* allocate a near fnode and copy the far fd fnode to it */
-f_node_ptr xlt_fd(int fd)
+/* copy the SFT fd into the first near fnode */
+STATIC f_node_ptr sft_to_fnode(int fd)
 {
-  f_node_ptr fnp = (f_node_ptr) 0;
+  sft FAR *sftp = idx_to_sft(fd);
+  f_node_ptr fnp = &fnode[0];
 
-  /* If the fd was invalid because it was out of range or the     */
-  /* requested file was not open, tell the caller and exit        */
-  /* note: an invalid fd is indicated by a 0 return               */
-  FatFSDbgPrintf(("xlt_fd: fd(%i) ?< f_nodes_cnt(%i)\n", fd, f_nodes_cnt));
-  if (fd < f_nodes_cnt)
-  {
-    fnp = get_near_f_node();
-    if (fnp != (f_node_ptr)0)
-    {
-      fmemcpy(fnp, &f_nodes[fd], sizeof(*fnp));
-      FatFSDbgPrintf(("xlt_fd: fnp->f_count=%i, fnp-fnode=%i\n", fnp->f_count, (fnp-fnode)));
-      if (fnp->f_count <= 0)
-      {
-        release_near_f_node(fnp);
-        fnp = (f_node_ptr) 0;
-      } else
-      {
-        fnode_fd[fnp - fnode] = fd;
-        FatFSDbgPrintf(("xlt_fd: success\n"));
-      }
-    }
-    else FatFSDbgPrintf(("xlt_fd: get_near_f_node failed\n"));
-  }
+  fnp->f_sft_idx = fd;
+
+  fnp->f_flags = sftp->sft_flags;
+
+  fnp->f_dir.dir_attrib = sftp->sft_attrib;
+  fmemcpy(fnp->f_dir.dir_name, sftp->sft_name, FNAME_SIZE + FEXT_SIZE);
+  fnp->f_dir.dir_time = sftp->sft_time;
+  fnp->f_dir.dir_date = sftp->sft_date;
+  fnp->f_dir.dir_size = sftp->sft_size;
+  fnp->f_dpb = sftp->sft_dcb;
+  setdstart(fnp->f_dpb, &fnp->f_dir, sftp->sft_stclust);
+
+  fnp->f_diridx = sftp->sft_diridx;
+  fnp->f_dirsector = sftp->sft_dirsector;
+  fnp->f_offset = sftp->sft_posit;
+  fnp->f_cluster = sftp->sft_cuclust;
+#ifdef WITHFAT32
+  fnp->f_cluster_offset = sftp->sft_relclust |
+    ((ULONG)sftp->sft_relclust_high << 16);
+#else
+  fnp->f_cluster_offset = sftp->sft_relclust;
+#endif
   return fnp;
 }
 
-/* copy a near fnode to the corresponding far one and release it */
-STATIC void save_far_f_node(f_node_ptr fnp)
+STATIC void fnode_to_sft(f_node_ptr fnp)
 {
-  FatFSDbgPrintf(("save_far_f_node: copying near fnode to far one\n"));
-  fmemcpy(&f_nodes[xlt_fnp(fnp)], fnp, sizeof(*fnp));
-  release_near_f_node(fnp);
+  sft FAR *sftp = idx_to_sft(fnp->f_sft_idx);
+
+  sftp->sft_flags = fnp->f_flags;
+
+  sftp->sft_attrib = fnp->f_dir.dir_attrib;
+  fmemcpy(sftp->sft_name, fnp->f_dir.dir_name, FNAME_SIZE + FEXT_SIZE);
+  sftp->sft_time = fnp->f_dir.dir_time;
+  sftp->sft_date = fnp->f_dir.dir_date;
+  sftp->sft_size = fnp->f_dir.dir_size;
+  sftp->sft_stclust = getdstart(fnp->f_dpb, &fnp->f_dir);
+
+  sftp->sft_diridx = fnp->f_diridx;
+  sftp->sft_dirsector = fnp->f_dirsector;
+  sftp->sft_dcb = fnp->f_dpb;
+  sftp->sft_posit = fnp->f_offset;
+  sftp->sft_cuclust = fnp->f_cluster;
+  sftp->sft_relclust = (UWORD)fnp->f_cluster_offset;
+#ifdef WITHFAT32
+  sftp->sft_relclust_high = (UWORD)(fnp->f_cluster_offset >> 16);
+#endif
 }
 
 /* TE
@@ -2168,26 +1805,28 @@ STATIC void save_far_f_node(f_node_ptr fnp)
     Apps tested (VB ISAM); BO: confirmation???
 */
 
-STATIC VOID shrink_file(f_node_ptr fnp)
+STATIC int shrink_file(f_node_ptr fnp)
 {
 
   ULONG lastoffset = fnp->f_offset;     /* has to be saved */
-  CLUSTER next, st;
+  CLUSTER last, next, st;
   struct dpb FAR *dpbp = fnp->f_dpb;
-
-  fnp->f_offset = fnp->f_dir.dir_size;     /* end of file */
+  int ret = DE_ACCESS;
 
   if (fnp->f_offset)
     fnp->f_offset--;            /* last existing cluster */
+  else if (fnp->f_cluster == FREE)
+    /* zero offset, 0-byte file: nothing to do ! */
+    goto done_success;
 
   if (map_cluster(fnp, XFR_READ) != SUCCESS)    /* error, don't truncate */
     goto done;
 
   st = fnp->f_cluster;
 
-  next = next_cluster(dpbp, st);
+  next = next_cluster(dpbp, st); /* return nr. of 1st cluster after new end */
 
-  if (next == 1) /* error */
+  if (next <= 1) /* 1/error or 0/FREE chain points into the void */
     goto done;
 
   /* Loop from start until either a FREE entry is         */
@@ -2195,24 +1834,32 @@ STATIC VOID shrink_file(f_node_ptr fnp)
   /* last cluster is encountered.                         */
   /* zap the FAT pointed to                       */
 
-  if (fnp->f_dir.dir_size == 0)
+  if (fnp->f_dir.dir_size == 0) /* file shrinks to size 0 */
   {
     fnp->f_cluster = FREE;
-    setdstart(dpbp, &fnp->f_dir, FREE);
-    link_fat(dpbp, st, FREE);
+    setdstart(dpbp, &fnp->f_dir, FREE); /* file no longer has start cluster */
+    last = FREE;
   }
   else
   {
-    if (next == LONG_LAST_CLUSTER) /* nothing to do */
-      goto done;
-    link_fat(dpbp, st, LONG_LAST_CLUSTER);
+    if (next == LONG_LAST_CLUSTER) /* nothing to do, file already ends here */
+      goto done_success;
+    last = LONG_LAST_CLUSTER; /* make file end */
   }
+  if (link_fat(dpbp, st, last) != SUCCESS)
+    goto done; /* do not wipe remainder of chain if FAT is broken */
 
-  wipe_out_clusters(dpbp, next);
+  wipe_out_clusters(dpbp, next); /* free clusters after the end */
+  /* flush buffers, make sure disk is updated */
+  if (!flush_buffers(fnp->f_dpb->dpb_unit))
+    goto done;
+
+done_success:
+  ret = SUCCESS;
 
 done:
   fnp->f_offset = lastoffset;   /* has to be restored */
-
+  return ret;
 }
 
 /*

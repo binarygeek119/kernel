@@ -1,28 +1,49 @@
 #
 # makefile for device.lib
 #
-# $Id$
+# $Id: makefile 1387 2009-05-19 21:39:29Z bartoldeman $
 #
+
 
 !include "../mkfiles/generic.mak"
 
-OBJS=floppy.obj rdpcclk.obj wrpcclk.obj wratclk.obj
-LIBOBJS=+floppy +rdpcclk +wrpcclk +wratclk
 
-# Build the LIBRARY ####################################################
+# MICROSOFT C
+# -----------
+#MODEL  = s
+#CFLAGS = /c /Gs /A$(MODEL)
+#AFLAGS = /Mx /Dmem$(MODEL)=1
+#TERM   = ;
 
-all:		..\lib\device.lib
+# BORLAND C
+# -----------
+#MODEL  = s
+#CFLAGS = -c -m$(MODEL)
+#AFLAGS = /Mx /Dmem$(MODEL)=1
+#LIBFLAGS = /c
 
-..\lib\device.lib: $(OBJS)
-		-$(RM) $*.lib
-		$(LIBUTIL) $(LIBFLAGS) $* $(LIBOBJS) $(LIBTERM)
+OBJS   = floppy.obj rdpcclk.obj wrpcclk.obj wratclk.obj
 
-$(OBJS):	$(DEPENDS) ../kernel/segs.inc
+LIBOBJS= $(LIBPLUS)floppy.obj $(LIBPLUS)rdpcclk.obj $(LIBPLUS)wrpcclk.obj $(LIBPLUS)wratclk.obj
 
-########################################################################
+
+
+# Build the LIBRARY
+# -----------------
+all:            production
+
+production:     ../lib/device.lib
+
+../lib/device.lib: device.lib
+	$(CP) device.lib ..$(DIRSEP)lib
+
+clobber:        clean
+	-$(RM) device.lib status.me ..$(DIRSEP)lib$(DIRSEP)device.lib
 
 clean:
-		-$(RM) *.bak *.cod *.crf *.err *.las *.lst *.map *.obj *.xrf
+	-$(RM) *.obj *.bak *.crf *.xrf *.map *.lst *.cod *.err
 
-clobber:	clean
-		-$(RM) ..\lib\device.lib status.me
+device.lib : $(OBJS)
+	-$(RM) device.lib
+	$(LIBUTIL) $(LIBFLAGS) device.lib $(LIBOBJS) $(LIBTERM)
+

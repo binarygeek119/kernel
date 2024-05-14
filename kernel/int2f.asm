@@ -25,14 +25,62 @@
 ; write to the Free Software Foundation, 675 Mass Ave,
 ; Cambridge, MA 02139, USA.
 ;
-; $Id$
+; $Id: int2f.asm 1591 2011-05-06 01:46:55Z bartoldeman $
 ;
 
-		%include "segs.inc"
+        %include "segs.inc"
         %include "stacks.inc"
 
+; macro to switch to an internal stack (if necessary), set DS == SS == DGROUP,
+; and push the old SS:SP onto the internal stack
+;
+; destroys AX, SI, BP; turns on IRQs
+;
+; int2f does not really need to switch to a separate stack for MS-DOS
+; compatibility; this is mainly to work around the C code's assumption
+; that SS == DGROUP
+;
+; TODO: remove the need for this hackery  -- tkchia
+%macro SwitchToInt2fStack 0
+    mov ax,[cs:_DGROUP_]
+    mov ds,ax
+    mov si,ss
+    mov bp,sp
+    cmp ax,si
+    jz %%already
+    cli
+    mov ss,ax
+    extern int2f_stk_top
+    mov sp,int2f_stk_top
+    sti
+%%already:
+; well, GCC does not currently clobber function parameters passed on the
+; stack; but just in case it decides to do that in the future, we push _two_
+; copies of the old SS:SP:
+;   - the second copy can be passed as a pointer parameter to a C function
+;   - the first copy is used to actually restore the user stack later
+    push si
+    push bp
+    push si
+    push bp
+%endmacro
+
+; macro to switch back from an internal stack, i.e. undo SwitchToInt2fStack
+;
+; destroys BP; turns on IRQs  -- tkchia
+%macro DoneInt2fStack 0
+    pop bp
+    pop bp
+    pop bp
+    cli
+    pop ss
+    mov sp,bp
+    sti
+%endmacro
+
 segment	HMA_TEXT
-            extern  _cu_psp:wrt DGROUP
+            extern _cu_psp
+            extern _HaltCpuWhileIdle
             extern _syscall_MUX14
 
             extern _DGROUP_
@@ -53,7 +101,27 @@ Int2f2:
                 stc
 FarTabRetn:
                 retf    2                       ; Return far
-Int2f3:
+
+WinIdle:					; only HLT if at haltlevel 2+
+		push	ds
+                mov     ds, [cs:_DGROUP_]
+		cmp	byte [_HaltCpuWhileIdle],2
+		pop	ds
+		jb	FarTabRetn
+		pushf
+		sti
+		hlt				; save some energy :-)
+		popf
+		push	ds
+                mov     ds, [cs:_DGROUP_]
+		cmp	byte [_HaltCpuWhileIdle],3
+		pop	ds
+		jb	FarTabRetn
+		mov	al,0			; even admit we HLTed ;-)
+		jmp	short FarTabRetn
+
+Int2f3:         cmp     ax,1680h                ; Win "release time slice"
+                je      WinIdle
                 cmp     ah,12h
                 je      IntDosCal               ; Dos Internal calls
                 cmp     ah,13h
@@ -86,11 +154,15 @@ Check4Share:
 Int2f?14:      ;; MUX-14 -- NLSFUNC API
                ;; all functions are passed to syscall_MUX14
                push bp                 ; Preserve BP later on
+               Protect386Registers
                PUSH$ALL
+               SwitchToInt2fStack
                call _syscall_MUX14
+               DoneInt2fStack
                pop bp                  ; Discard incoming AX
                push ax                 ; Correct stack for POP$ALL
                POP$ALL
+               Restore386Registers
                mov bp, sp
                or ax, ax
                jnz Int2f?14?1          ; must return set carry
@@ -106,19 +178,19 @@ Int2f?iret:
 
 ; DRIVER.SYS calls - now only 0803.
 DriverSysCal:
-                extern  _Dyn:wrt DGROUP
+                extern  _Dyn
                 cmp     al, 3
                 jne     Int2f?iret
                 mov     ds, [cs:_DGROUP_]
                 mov     di, _Dyn+2
                 jmp     short Int2f?iret
 
+
 ;**********************************************************************
 ; internal dos calls INT2F/12xx and INT2F/4A01,4A02 - handled through C 
-; also handle Windows' DOS notification hooks
 ;**********************************************************************
 IntDosCal:                
-                        ; set up register frame
+                        ; set up register structure
 ;struct int2f12regs
 ;{
 ;  [space for 386 regs]
@@ -139,28 +211,6 @@ IntDosCal:
 
     cld
 
-%IFDEF WIN31SUPPORT     ; switch to local stack, no reentrancy support
-                extern  mux2F_stk_top:wrt DGROUP
-                cli
-                ; setup, initialize copy
-                mov  si, sp                ; ds:si = ss:sp (user stack)
-                mov  ax, ss
-                mov  ds, ax
-                mov  di, mux2F_stk_top-30  ; es:di = local stack-copied chunk
-                mov  es, [cs:_DGROUP_]     ; [-X == -(2*cx below+4) ]
-                mov  cx, 13                ; how many words to copy over
-                ; setup, store original stack pointer
-                mov  [es:di+28], si        ; store ss:sp
-                mov  [es:di+26], ds
-                ; actually switch to local stack
-                mov  ax, es
-                mov  ss, ax
-                mov  sp, di
-                ; copy over stack data to local stack
-                rep movsw
-                sti
-%ENDIF ; WIN31SUPPORT
-
 %if XCPU >= 386
   %ifdef WATCOM
     mov si,fs
@@ -170,9 +220,10 @@ IntDosCal:
   %endif
 %endif          
 
-    mov ds,[cs:_DGROUP_]
+    SwitchToInt2fStack
     extern   _int2F_12_handler
     call _int2F_12_handler
+    DoneInt2fStack
 
 %if XCPU >= 386
   %ifdef WATCOM
@@ -182,24 +233,6 @@ IntDosCal:
     Restore386Registers    
   %endif
 %endif      
-    
-%IFDEF WIN31SUPPORT     ; switch back to user stack
-                cli
-                ; setup, initialize copy
-                mov  si, sp                ; ds:si = ss:sp (local stack)
-                mov  ax, ss
-                mov  ds, ax
-                mov  di, [ds:si+28]        ; restore original ss:sp
-                mov  es, [ds:si+26]
-                mov  cx, 13                ; how many words to copy over
-                ; actually switch to user stack
-                mov  ax, es
-                mov  ss, ax
-                mov  sp, di
-                ; copy over stack data to user stack
-                rep movsw
-                sti
-%ENDIF ; WIN31SUPPORT
     
     pop es
     pop ds
@@ -217,6 +250,7 @@ IntDosCal:
 SHARE_CHECK:
 		mov	ax, 0x1000
 		int	0x2f
+		test	ax, "US"	; Uninstallable SHARE signature
 		ret
            
 ;           DOS calls this to see if it's okay to open the file.
@@ -225,7 +259,7 @@ SHARE_CHECK:
 ;           error.  If < 0 is returned, it is the negated error return
 ;           code, so DOS simply negates this value and returns it in
 ;           AX.
-; STATIC int share_open_check(char * filename,
+; STATIC int share_open_check(const char FAR * filename,
 ;				/* pointer to fully qualified filename */
 ;                            unsigned short pspseg,
 ;				/* psp segment address of owner process */
@@ -234,16 +268,17 @@ SHARE_CHECK:
 ;			     int sharemode) /* SHARE_COMPAT, etc... */
 		global SHARE_OPEN_CHECK
 SHARE_OPEN_CHECK:
-		mov	es, si		; save si
+		push	ds
+		pop	es		; save ds
+		mov     di, si          ; save si
 		pop	ax		; return address
-		pop	dx		; sharemode;
-		pop	cx		; openmode;
-		pop	bx		; pspseg;
-		pop	si		; filename
+		popargs	{ds,si},bx,cx,dx; filename,pspseg,openmode,sharemode;
 		push	ax		; return address
 		mov	ax, 0x10a0
 		int	0x2f	     	; returns ax
-		mov	si, es		; restore si
+		mov     si, di          ; restore si
+		push	es
+		pop	ds		; restore ds
 		ret
 
 ;          DOS calls this to record the fact that it has successfully
@@ -284,12 +319,13 @@ share_common:
 		mov	bp, sp
 		push	si
 		push	di
-		mov	bx, [bp + 16]	; pspseg
-		mov	cx, [bp + 14]	; fileno
-		mov	si, [bp + 12]	; high word of ofs
-		mov	di, [bp + 10]	; low word of ofs
-		les	dx, [bp + 6]	; len
-		or	ax, [bp + 4]	; allowcriter/unlock
+arg pspseg, fileno, {ofs,4}, {len,4}, allowcriter
+		mov	bx, [.pspseg] ; pspseg
+		mov	cx, [.fileno] ; fileno
+		mov	si, [.ofs+2] ; high word of ofs
+		mov	di, [.ofs] ; low word of ofs
+		les	dx, [.len] ; len
+		or	ax, [.allowcriter] ; allowcriter/unlock
 		int	0x2f
 		pop	di
 		pop	si
@@ -310,6 +346,25 @@ share_common:
 SHARE_LOCK_UNLOCK:
 		mov	ax,0x10a4
 		jmp	short share_common
+
+;           DOS calls this to see if share already has the file marked as open.
+;           Returns:
+;             1 if open
+;             0 if not
+; STATIC WORD share_is_file_open(const char far *filename) /* pointer to fully qualified filename */
+		global SHARE_IS_FILE_OPEN
+SHARE_IS_FILE_OPEN:
+		mov	si, ds
+		mov	es, si		; save ds
+		pop	ax		; save return address
+		pop	si		; filename
+		pop	ds		; SEG filename
+		push	ax		; restore return address
+		mov	ax, 0x10a6
+		int	0x2f	     	; returns ax
+		mov	si, es		; restore ds
+		mov	ds, si
+		ret
 
 ; Int 2F Multipurpose Remote System Calls
 ;
@@ -346,10 +401,8 @@ remote_lock_unlock:
                 global NETWORK_REDIRECTOR_MX
 NETWORK_REDIRECTOR_MX:
                 pop     bx             ; ret address
-                pop     cx             ; stack value (arg); cx in remote_rw
-                pop     dx             ; off s
-                pop     es             ; seg s
-                pop     ax             ; cmd (ax)
+                popargs ax,{es,dx},cx  ; cmd (ax), seg:off s
+                                       ; stack value (arg); cx in remote_rw
                 push    bx             ; ret address
 call_int2f:
                 push    bp
@@ -374,6 +427,8 @@ call_int2f:
 
                 push    cx             ; arg
                 cmp     al, 0ch
+                je      remote_getfree
+                cmp     al, 0xa3
                 je      remote_getfree
                 cmp     al, 1eh
                 je      remote_print_doredir
@@ -425,6 +480,7 @@ remote_getfree:
                 mov     [di+2],bx
                 mov     [di+4],cx
                 mov     [di+6],dx
+                mov     [di+8],si	; for REM_GETLARGEFREE, unused on REM_GETFREE
                 jmp     short ret_set_ax_to_carry
 
 remote_rw:
@@ -451,34 +507,44 @@ int2f_restore_ds:
                 pop     ds
                 jmp     short ret_set_ax_to_carry
 
-; extern UWORD ASMCFUNC call_nls(UWORD subfct, struct nlsInfoBlock *nlsinfo,
-; UWORD bp, UWORD cp, UWORD cntry, UWORD bufsize, UWORD FAR *buf, UWORD *id);
+; extern UWORD ASMPASCAL call_nls(UWORD bp, UWORD FAR *buf,
+;	UWORD subfct, UWORD cp, UWORD cntry, UWORD bufsize);
 
-		global _call_nls
-_call_nls:
+		extern _nlsInfo
+		global CALL_NLS
+CALL_NLS:
+		pop	es		; ret addr
+		pop	cx		; bufsize
+		pop	dx		; cntry
+		pop	bx		; cp
+		pop	ax		; sub fct
+		mov	ah, 0x14
+		push	es		; ret addr
 		push	bp
 		mov	bp, sp
 		push	si
 		push	di
-		mov	al, [bp + 4]	; subfct
-		mov	ah, 0x14
-		mov	si, [bp + 6]	; nlsinfo
-		mov	bx, [bp + 10]	; cp
-		mov	dx, [bp + 12]	; cntry
-		mov	cx, [bp + 14]	; bufsize
-		les	di, [bp + 16]	; buf
-		push	bp
+		mov	si, _nlsInfo	; nlsinfo
+		les	di, [bp + 4]	; buf
 		mov	bp, [bp + 8]	; bp
 		int	0x2f
-		pop	bp
-		mov	bp, [bp + 20]	; store id (in SS:) unless it's NULL
-		or	bp, bp
-		jz	nostore
-		mov	[bp], bx
-nostore:
+		mov	dx, bx          ; return id in high word
 		pop	di
 		pop	si
 		pop	bp
+		ret	6
+
+; extern UWORD ASMPASCAL floppy_change(UWORD drives)
+
+		global FLOPPY_CHANGE
+FLOPPY_CHANGE:
+		pop	cx		; ret addr
+		pop	dx		; drives
+		push	cx		; ret addr
+		mov	ax, 0x4a00
+		xor	cx, cx
+		int	0x2f
+		mov	ax, cx		; return
 		ret
 
 ;
@@ -503,22 +569,23 @@ nostore:
 ;  00h    successful
 ;  80h    function not implemented
 ;  B0h    only a smaller UMB is available
-;  B1h    no UMB's are available
+;  B1h    no UMBs are available
 ;  B2h    UMB segment number is invalid
 ;
 
 segment INIT_TEXT
                 ; int ASMPASCAL UMB_get_largest(void FAR * driverAddress,
                 ;                UCOUNT * seg, UCOUNT * size);
-                global UMB_GET_LARGEST
+arg {driverAddress,4}, argseg, size
+		global UMB_GET_LARGEST
                 
 UMB_GET_LARGEST:
                 push    bp
                 mov     bp,sp
 
                 mov     dx,0xffff       ; go for broke!
-                mov     ax,1000h        ; get the umb's
-                call    far [bp+8]      ; Call the driver
+                mov     ax,1000h        ; get the UMBs
+                call    far [.driverAddress] ; Call the driver
 
 ;
 ;       bl = 0xB0 and  ax = 0 so do it again.
@@ -530,7 +597,7 @@ UMB_GET_LARGEST:
                 je      umbt_error
 
                 mov     ax,1000h        ; dx set with largest size
-                call    far [bp+8]      ; Call the driver
+                call    far [.driverAddress] ; Call the driver
 
                 cmp     ax,1
                 jne     umbt_error
@@ -538,10 +605,10 @@ UMB_GET_LARGEST:
                                         ; and the size
 
                 mov 	cx,bx           ; *seg = segment
-                mov 	bx, [bp+6]
+                mov 	bx, [.argseg]
                 mov 	[bx],cx
 
-                mov 	bx, [bp+4]      ; *size = size
+                mov 	bx, [.size]      ; *size = size
                 mov 	[bx],dx
 
 umbt_ret:

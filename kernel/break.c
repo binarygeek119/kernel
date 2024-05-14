@@ -33,7 +33,7 @@
 
 #ifdef VERSION_STRINGS
 static BYTE *RcsId =
-    "$Id$";
+    "$Id: break.c 885 2004-04-14 15:40:51Z bartoldeman $";
 #endif
 
 #define CB_FLG *(UBYTE FAR*)MK_FP(0x0, 0x471)
@@ -53,13 +53,13 @@ unsigned char ctrl_break_pressed(void)
 
 unsigned char check_handle_break(struct dhdr FAR **pdev)
 {
-  unsigned char c = 0;
-  if (ctrl_break_pressed() ||
-                         (c = (unsigned char)ndread(&syscon)) == CTL_C ||
-      *pdev != syscon && (c = (unsigned char)ndread(pdev))    == CTL_C)
-  {
+  unsigned char c = CTL_C;
+  if (!ctrl_break_pressed())
+    c = (unsigned char)ndread(&syscon);
+  if (c != CTL_C && *pdev != syscon)
+    c = (unsigned char)ndread(pdev);
+  if (c == CTL_C)
     handle_break(pdev, -1);
-  }
   return c;
 }
 
@@ -76,7 +76,7 @@ unsigned char check_handle_break(struct dhdr FAR **pdev)
 
 void handle_break(struct dhdr FAR **pdev, int sft_out)
 {
-  static char *buf = "^C\r\n";
+  char *buf = "^C\r\n";
 
   CB_FLG &= ~CB_MSK;            /* reset the ^Break flag */
   con_flush(pdev);
@@ -90,3 +90,4 @@ void handle_break(struct dhdr FAR **pdev, int sft_out)
 
   spawn_int23();                /* invoke user INT-23 and never come back */
 }
+

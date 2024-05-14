@@ -26,13 +26,13 @@
 
 ***************************************************************/
 
-#define DEBUG           /* to display extra information */
-/* #define DDEBUG */    /* to enable display of sector dumps */
-#define WITHOEMCOMPATBS /* include support for OEM MS/PC DOS 3.??-6.x */
-#define FDCONFIG        /* include support to configure FD kernel */
-/* #define DRSYS */     /* SYS for Enhanced DR-DOS (OpenDOS enhancement Project) */
+/* #define DEBUG */           /* to display extra information */
+/* #define DDEBUG */          /* to enable display of sector dumps */
+/* #define WITHOEMCOMPATBS */ /* include support for OEM MS/PC DOS 3.??-6.x */
+#define FDCONFIG              /* include support to configure FD kernel */
+/* #define DRSYS */           /* SYS for Enhanced DR-DOS (OpenDOS enhancement Project) */
 
-#define SYS_VERSION "v3.6c"
+#define SYS_VERSION "v3.6e"
 #define SYS_NAME "FreeDOS System Installer "
 
 
@@ -48,14 +48,18 @@
 #endif
 
 #include <stdlib.h>
+#ifndef __GNUC__
 #include <dos.h>
+#endif
 #include <ctype.h>
+#ifndef __GNUC__
 #include <fcntl.h>
 #include <sys/stat.h>
 #ifdef __TURBOC__
 #include <mem.h>
 #else
 #include <memory.h>
+#endif
 #endif
 #include <string.h>
 #ifdef __TURBOC__
@@ -75,8 +79,8 @@
  * #including <stdio.h> to make executable MUCH smaller
  * using [s]printf from prf.c!
  */
-extern int VA_CDECL printf(const char FAR * fmt, ...);
-extern int VA_CDECL sprintf(char FAR * buff, const char FAR * fmt, ...);
+extern int VA_CDECL printf(CONST char * fmt, ...);
+extern int VA_CDECL sprintf(char * buff, CONST char * fmt, ...);
 
 #include "fat12com.h"
 #include "fat16com.h"
@@ -91,7 +95,128 @@ extern int VA_CDECL sprintf(char FAR * buff, const char FAR * fmt, ...);
 
 #ifndef __WATCOMC__
 
+#ifdef __GNUC__
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <errno.h>
+#define O_BINARY 0
+#define stricmp strcasecmp
+#define memicmp strncasecmp
+union REGS {
+  struct {
+    unsigned char al, ah, bl, bh, cl, ch, dl, dh;
+  } h;
+  struct {
+    unsigned short ax, bx, cx, dx, si, di, cflag;
+  } x;
+};
+struct SREGS {
+  unsigned short ds, es;
+};
+struct _diskfree_t {
+  unsigned short avail_clusters, sectors_per_cluster, bytes_per_sector;
+};
+
+int int86(int ivec, union REGS *in, union REGS *out)
+{
+  /* must save sp for int25/26 */
+  asm("mov %5, (1f+1); jmp 0f; 0:push %%ds; mov %%di, %%dx; mov %%sp, %%di;"
+      "1:int $0x00; mov %%di, %%sp; pop %%ds; sbb %0, %0" :
+      "=r"(out->x.cflag),
+      "=a"(out->x.ax), "=b"(out->x.bx), "=c"(out->x.cx), "=d"(out->x.dx) :
+      "q"((unsigned char)ivec), "a"(in->x.ax), "b"(in->x.bx),
+      "c"(in->x.cx), "D"(in->x.dx), "S"(in->x.si) :
+      "cc", "memory");
+  return out->x.ax;
+}
+
+int intdos(union REGS *in, union REGS *out)
+{
+  return int86(0x21, in, out);
+}
+
+int intdosx(union REGS *in, union REGS *out, struct SREGS *s)
+{
+  asm("push %%ds; mov %%bx, %%ds; int $0x21; pop %%ds; sbb %0, %0":
+      "=r"(out->x.cflag), "=a"(out->x.ax) :
+      "a"(in->x.ax), "c"(in->x.cx), "d"(in->x.dx),
+      "D"(in->x.di), "S"(in->x.si), "b"(s->ds), "e"(s->es) :
+      "cc", "memory");
+  return out->x.ax;
+}
+
+unsigned _dos_allocmem(unsigned size, unsigned *seg)
+{
+  union REGS in, out;
+  in.h.ah = 0x48;
+  in.x.bx = size;
+  unsigned ret = intdos(&in, &out);
+  if (!out.x.cflag)
+  {
+    *seg = ret;
+    ret = 0;
+  }
+  return ret;
+}
+
+unsigned _dos_freemem(unsigned seg)
+{
+  union REGS in, out;
+  struct SREGS s;
+  in.h.ah = 0x49;
+  s.es = seg;
+  return intdosx(&in, &out, &s);
+}
+
+unsigned int _dos_getdiskfree(unsigned int drive,
+                              struct _diskfree_t *diskspace)
+{
+  union REGS in, out;
+  in.x.ax = 0x3600;
+  in.x.dx = drive;
+  unsigned ret = intdos(&in, &out);
+  diskspace->avail_clusters = out.x.bx;
+  diskspace->sectors_per_cluster = out.x.dx;
+  diskspace->bytes_per_sector = out.x.cx;
+  return ret;
+}
+
+long filelength(int fhandle)
+{
+  long ret = lseek(fhandle, 0, SEEK_END);
+  lseek(fhandle, 0, SEEK_SET);
+  return ret;
+}
+
+struct find_t {
+  char reserved[21];
+  unsigned char attrib;
+  unsigned short wr_time;
+  unsigned short wr_date;
+  unsigned long size;
+  char filename[13];
+};
+#define _A_NORMAL 0x00
+#define _A_HIDDEN 0x02
+#define _A_SYSTEM 0x04
+
+int _dos_findfirst(const char *file_name, unsigned int attr,
+                   struct find_t *find_tbuf)
+{
+  union REGS in, out;
+  in.h.ah = 0x4e;
+  in.x.dx = FP_OFF(file_name);
+  in.x.cx = attr;
+  intdos(&in, &out);
+  if (out.x.cflag)
+    return out.x.ax;
+  memcpy(find_tbuf, (void *)0x80, sizeof(*find_tbuf));
+  return 0;
+}
+#else
 #include <io.h>
+#endif
 
 /* returns current DOS drive, A=0, B=1,C=2, ... */
 #ifdef __TURBOC__
@@ -166,7 +291,9 @@ int write(int fd, const void *buf, unsigned count)
 }
 
 #define close _dos_close
+#endif
 
+#if defined(__WATCOMC__) || defined(__GNUC__)
 int stat(const char *file_name, struct stat *statbuf)
 {
   struct find_t find_tbuf;
@@ -176,7 +303,9 @@ int stat(const char *file_name, struct stat *statbuf)
   /* statbuf->st_attr = (ULONG)find_tbuf.attrib; */
   return ret;
 }
+#endif
 
+#ifdef __WATCOMC__
 /* WATCOM's getenv is case-insensitive which wastes a lot of space
    for our purposes. So here's a simple case-sensitive one */
 char *getenv(const char *name)
@@ -200,6 +329,7 @@ char *getenv(const char *name)
   return NULL;
 }
 #endif
+
 
 BYTE pgm[] = "SYS";
 
@@ -264,6 +394,7 @@ struct bootsectortype32 {
  * globals needed by put_boot & check_space
  */
 enum {FAT12 = 12, FAT16 = 16, FAT32 = 32} fs;  /* file system type */
+unsigned smallfat32;
 /* static */ struct xfreespace x; /* we make this static to be 0 by default -
                                      this avoids FAT misdetections */
 
@@ -333,6 +464,7 @@ DOSBootFiles bootFiles[] = {
 #define OEM_PC     3  /* use PC-DOS compatible boot sector and names */ 
 #define OEM_MS     4  /* use PC-DOS compatible BS with MS names */
 #define OEM_W9x    5  /* use PC-DOS compatible BS with MS names */
+#define OEM_RX     6  /* use PC-DOS compatible BS with Rx names */
 #endif
 
 CONST char * msgDOS[DOSFLAVORS] = {  /* order should match above items */
@@ -348,6 +480,7 @@ CONST char * msgDOS[DOSFLAVORS] = {  /* order should match above items */
   "PC-DOS compatibility mode\n",
   "MS-DOS compatibility mode\n",
   "Win9x DOS compatibility mode\n",
+  "RxDOS compatibility mode\n",
 #endif
 };
 
@@ -366,19 +499,20 @@ typedef struct SYSOptions {
   BYTE *bsFileOrig;             /* file name & path to save original bs when backing up */
   BYTE *fnKernel;               /* optional override to source kernel filename (src only) */
   BYTE *fnCmd;                  /* optional override to cmd interpreter filename (src & dest) */
+  enum {AUTO=0,LBA,CHS} force;  /* optional force boot sector to only use LBA or CHS */
+  BOOL verbose;                 /* show extra (DEBUG) output */
 } SYSOptions;
 
 void dumpBS(const char *, int);
 void restoreBS(const char *, int);
 void put_boot(SYSOptions *opts);
 BOOL check_space(COUNT, ULONG);
-BOOL copy(const BYTE *source, COUNT drive, const BYTE * filename);
+BOOL copy(SYSOptions *opts, const BYTE *source, COUNT drive, const BYTE * filename);
 
 void showHelpAndExit(void)
 {
   printf(
-      "Usage: \n"
-      "%s [source] drive: [bootsect] [{option}]\n"
+      "Usage: %s [source] drive: [bootsect] [{option}]\n"
       "  source   = A:,B:,C:\\DOS\\,etc., or current directory if not given\n"
       "  drive    = A,B,etc.\n"
       "  bootsect = name of 512-byte boot sector file image for drive:\n"
@@ -400,7 +534,9 @@ void showHelpAndExit(void)
       "  /K name  : name of kernel to use in boot sector instead of %s\n"
       "  /L segm  : hex load segment to use in boot sector instead of %02x\n"
       "  /B btdrv : hex BIOS # of boot drive set in bs, 0=A:, 80=1st hd,...\n"
-      "  /FORCEDRV: force use of drive # set in bs instead of BIOS boot value\n"
+      "  /FORCE   : override automatic selection of BIOS related settings\n"
+      "             /FORCE:BSDRV use boot drive # set in bootsector\n"
+      "             /FORCE:BIOSDRV use boot drive # provided by BIOS\n"
       "  /NOBAKBS : skips copying boot sector to backup bs, FAT32 only else ignored\n"
 #ifdef FDCONFIG
       "%s CONFIG /help\n"
@@ -445,6 +581,11 @@ void initOptions(int argc, char *argv[], SYSOptions *opts)
       {
         showHelpAndExit();
       }
+      /* enable extra (DEBUG) output */
+      else if (memicmp(argp, "VERBOSE", 7) == 0)
+      {
+        opts->verbose = 1;
+      }
       /* write to *both* the real boot sector and the image file */
       else if (memicmp(argp, "BOTH", 4) == 0)
       {
@@ -484,6 +625,8 @@ void initOptions(int argc, char *argv[], SYSOptions *opts)
             opts->flavor = OEM_MS;
           else if (memicmp(argp, "W9", 2) == 0)
             opts->flavor = OEM_W9x;
+          else if (memicmp(argp, "RX", 2) == 0)
+            opts->flavor = OEM_RX;
 #endif
           else if (memicmp(argp, "FD", 2) == 0)
             opts->flavor = OEM_FD;
@@ -499,10 +642,44 @@ void initOptions(int argc, char *argv[], SYSOptions *opts)
           showHelpAndExit();
         }
       }
-      /* force use of drive # set in bs instead of BIOS boot value */
-      else if (memicmp(argp, "FORCEDRV", 8) == 0)
+      /* override auto options */
+      else if (memicmp(argp, "FORCE", 5) == 0)
       {
-        opts->ignoreBIOS = 1;
+        argp += 5;
+        if (*argp == ':')
+        {
+          argp++;  /* point to CHS/LBA/... that follows */
+
+          /* specify which BIOS access mode to use */
+          if (memicmp(argp, "AUTO", 4) == 0) /* default */
+            opts->force = AUTO;
+          else if (memicmp(argp, "CHS", 3) == 0)
+            opts->force = CHS;
+          else if (memicmp(argp, "LBA", 3) == 0)
+            opts->force = LBA;
+
+          /* specify if BIOS or BOOTSECTOR provided boot drive # is to be used */
+          else if (memicmp(argp, "BSDRV", 5) == 0) /* same as FORCEDRV */
+            opts->ignoreBIOS = 1;
+          else if (memicmp(argp, "BIOSDRV", 7) == 0) /* always use BIOS passed */
+            opts->ignoreBIOS = -1;
+          else
+          {
+            printf("%s: invalid FORCE qualifier %s\n", pgm, argp);
+            showHelpAndExit();
+          }
+        }
+        else if (memicmp(argp, "DRV", 3) == 0) /* FORCEDRV */
+        {
+          /* force use of drive # set in bs instead of BIOS boot value */
+          /* deprecated, use FORCE:BSDRV                               */
+          opts->ignoreBIOS = 1;
+        }
+        else
+        {
+          printf("%s: invalid FORCE qualifier %s\n", pgm, argp);
+          showHelpAndExit();
+        }
       }
       /* skips copying boot sector to backup bs, FAT32 only else ignored */
       else if (memicmp(argp, "NOBAKBS", 7) == 0)
@@ -570,10 +747,39 @@ void initOptions(int argc, char *argv[], SYSOptions *opts)
     {
       drivearg = argno;         /* either source or destination drive */
     }
-    else if (!srcarg /* && drivearg */)
+    else if (!srcarg /* && drivearg */ && !opts->bsFile)
     {
-      srcarg = drivearg; /* set source path */
-      drivearg = argno;  /* set destination drive */
+      /* need to determine is user specified [source] dest or dest [bootfile] (or [source] dest [bootfile])
+         - dest must be either X or X: as only a drive specifier without any path is valid -
+         if 1st arg not drive and 2nd is then [source] dest form
+         if 1st arg drive and 2nd is not drive then dest [bootfile] form
+         if both 1st arg and 2nd are not drives then invalid arguments
+         if both 1st arg and 2nd are drives then assume [source] dest form (use ./X form is single letter used)
+      */
+      if (!argv[drivearg][1] || (argv[drivearg][1]==':' && !argv[drivearg][2])) /* if 1st arg drive */
+      {
+        if (!argv[argno][1] || (argv[argno][1]==':' && !argv[argno][2])) /* if 2nd arg drive */
+        {
+          srcarg = drivearg; /* set source path */
+          drivearg = argno;  /* set destination drive */
+        }
+        else
+        {
+          opts->bsFile = argv[argno];
+        }
+      }
+      else
+      {
+        if (!argv[argno][1] || (argv[argno][1]==':' && !argv[argno][2])) /* if 2nd arg drive */
+        {
+          srcarg = drivearg; /* set source path */
+          drivearg = argno;  /* set destination drive */
+        }
+        else
+        {
+          goto EXITBADARG;
+        }
+      }
     }
     else if (!opts->bsFile /* && srcarg && drivearg */)
     {
@@ -581,6 +787,7 @@ void initOptions(int argc, char *argv[], SYSOptions *opts)
     }
     else /* if (opts->bsFile && srcarg && drivearg) */
     {
+      EXITBADARG:
       printf("%s: invalid argument %s\n", pgm, argv[argno]);
       showHelpAndExit();
     }
@@ -604,10 +811,12 @@ void initOptions(int argc, char *argv[], SYSOptions *opts)
   sprintf(opts->srcDrive, "%c:", 'A' + getcurdrive());
   if (srcarg)
   {
-        int slen;
+    int slen;
     /* set source path, reserving room to append filename */
-    if ( (argv[srcarg][1] == ':') /* || ((argv[srcarg][0]=='\\') && (argv[srcarg][1] == '\\'))*/ ) 
+    if ( (argv[srcarg][1] == ':') || ((argv[srcarg][0]=='\\') && (argv[srcarg][1] == '\\')) ) 
       strncpy(opts->srcDrive, argv[srcarg], SYS_MAXPATH-13);
+    else if (argv[srcarg][1] == '\0') /* assume 1 char is drive not path specifier */
+      sprintf(opts->srcDrive, "%c:", toupper(*(argv[srcarg])));
     else /* only path provided, append to default drive */
       strncat(opts->srcDrive, argv[srcarg], SYS_MAXPATH-15);
     slen = strlen(opts->srcDrive);
@@ -687,7 +896,8 @@ void initOptions(int argc, char *argv[], SYSOptions *opts)
   OEM_FD;
 #endif
 
-  printf(msgDOS[opts->flavor]);
+  if (opts->verbose)
+    printf(msgDOS[opts->flavor]);
 
   /* set compatibility settings not explicitly set */
   if (!opts->kernel.kernel) opts->kernel.kernel = bootFiles[opts->flavor].kernel;
@@ -697,13 +907,17 @@ void initOptions(int argc, char *argv[], SYSOptions *opts)
   opts->kernel.minsize = bootFiles[opts->flavor].minsize;
 
 
+  /* did user insist on always using BIOS provided drive # */
+  if (opts->ignoreBIOS == -1)
+    opts->ignoreBIOS = 0;  /* its really a boolean value in rest of code */
   /* if destination is floppy (A: or B:) then use drive # stored in boot sector */
-  if (opts->dstDrive < 2)
+  else if (opts->dstDrive < 2)
     opts->ignoreBIOS = 1;
 
   /* if bios drive to store in boot sector not set and not floppy set to 1st hd */
   if (!opts->defBootDrive && (opts->dstDrive >= 2))
     opts->defBootDrive = 0x80;
+  /* else opts->defBootDrive = 0x0; the 1st floppy */
 
 
   /* unless we are only setting boot sector, verify kernel file exists */
@@ -763,8 +977,6 @@ int main(int argc, char **argv)
   SYSOptions opts;            /* boot options and other flags */
   BYTE srcFile[SYS_MAXPATH];  /* full path+name of [kernel] file [to copy] */
 
-  printf(SYS_NAME SYS_VERSION ", " __DATE__ "\n");
-
 #ifdef FDCONFIG
   if (argc > 1 && memicmp(argv[1], "CONFIG", 6) == 0)
   {
@@ -774,15 +986,20 @@ int main(int argc, char **argv)
 
   initOptions(argc, argv, &opts);
 
-  printf("Processing boot sector...\n");
+  if (opts.verbose)
+    printf(SYS_NAME SYS_VERSION ", " __DATE__ "\n");
+
+  if (opts.verbose)
+	printf("Processing boot sector...\n");
   put_boot(&opts);
 
   if (opts.copyKernel)
   {
-    printf("Now copying system files...\n");
+	if (opts.verbose)
+		printf("Now copying system files...\n");
 
     sprintf(srcFile, "%s%s", opts.srcDrive, (opts.fnKernel)?opts.fnKernel:opts.kernel.kernel);
-    if (!copy(srcFile, opts.dstDrive, opts.kernel.kernel))
+    if (!copy(&opts, srcFile, opts.dstDrive, opts.kernel.kernel))
     {
       printf("%s: cannot copy \"%s\"\n", pgm, srcFile);
       exit(1);
@@ -791,7 +1008,7 @@ int main(int argc, char **argv)
     if (opts.kernel.dos)
     {
       sprintf(srcFile, "%s%s", opts.srcDrive, opts.kernel.dos);
-      if (!copy(srcFile, opts.dstDrive, opts.kernel.dos) && opts.kernel.minsize)
+      if (!copy(&opts, srcFile, opts.dstDrive, opts.kernel.dos) && opts.kernel.minsize)
       {
         printf("%s: cannot copy \"%s\"\n", pgm, srcFile);
         exit(1);
@@ -801,16 +1018,17 @@ int main(int argc, char **argv)
 
   if (opts.copyShell)
   {
-    printf("Copying shell (command interpreter)...\n");
+	if (opts.verbose)
+		printf("Copying shell (command interpreter)...\n");
   
     /* copy command.com, 1st try source path, then try %COMSPEC% */
     sprintf(srcFile, "%s%s", opts.srcDrive, (opts.fnCmd)?opts.fnCmd:"COMMAND.COM");
-    if (!copy(srcFile, opts.dstDrive, "COMMAND.COM"))
+    if (!copy(&opts, srcFile, opts.dstDrive, "COMMAND.COM"))
     {
       char *comspec = getenv("COMSPEC");
       if (!opts.fnCmd && (comspec != NULL))
         printf("%s: Trying shell from %%COMSPEC%%=\"%s\"\n", pgm, comspec);
-      if (opts.fnCmd || (comspec == NULL) || !copy(comspec, opts.dstDrive, "COMMAND.COM"))
+      if (opts.fnCmd || (comspec == NULL) || !copy(&opts, comspec, opts.dstDrive, "COMMAND.COM"))
       {
         printf("\n%s: failed to find command interpreter (shell) file %s\n", pgm, (opts.fnCmd)?opts.fnCmd:"COMMAND.COM");
         exit(1);
@@ -818,7 +1036,9 @@ int main(int argc, char **argv)
     } /* copy shell */
   }
 
-  printf("\nSystem transferred.\n");
+  if (opts.verbose)
+	printf("\n");
+  printf("System transferred.\n\n");
   return 0;
 }
 
@@ -890,7 +1110,7 @@ void reset_drive(int DosDrive);
 #pragma aux reset_drive = \
       "push ds" \
       "inc dx" \
-      "mov ah, 0xd" \ 
+      "mov ah, 0xd" \
       "int 0x21" \
       "mov ah,0x32" \
       "int 0x21" \
@@ -916,7 +1136,7 @@ int generic_block_ioctl(unsigned drive, unsigned cx, unsigned char *par);
 
 #ifndef __TURBOC__
 
-int2526readwrite(int DosDrive, void *diskReadPacket, unsigned intno)
+int int2526readwrite(int DosDrive, void *diskReadPacket, unsigned intno)
 {
   union REGS regs;
 
@@ -1080,19 +1300,21 @@ BOOL haveLBA(void)
 #endif
 
 void correct_bpb(struct bootsectortype *default_bpb,
-                 struct bootsectortype *oldboot)
+                 struct bootsectortype *oldboot, BOOL verbose)
 {
   /* don't touch partitions (floppies most likely) that don't have hidden
      sectors */
   if (default_bpb->bsHiddenSecs == 0)
     return;
-#ifdef DEBUG
-  printf("Old boot sector values: sectors/track: %u, heads: %u, hidden: %lu\n",
-         oldboot->bsSecPerTrack, oldboot->bsHeads, oldboot->bsHiddenSecs);
-  printf("Default and new boot sector values: sectors/track: %u, heads: %u, "
-         "hidden: %lu\n", default_bpb->bsSecPerTrack, default_bpb->bsHeads,
-         default_bpb->bsHiddenSecs);
-#endif
+
+  if (verbose)
+  {
+    printf("Old boot sector values: sectors/track: %u, heads: %u, hidden: %lu\n",
+           oldboot->bsSecPerTrack, oldboot->bsHeads, oldboot->bsHiddenSecs);
+    printf("Default and new boot sector values: sectors/track: %u, heads: %u, "
+           "hidden: %lu\n", default_bpb->bsSecPerTrack, default_bpb->bsHeads,
+           default_bpb->bsHiddenSecs);
+  }
 
   oldboot->bsSecPerTrack = default_bpb->bsSecPerTrack;
   oldboot->bsHeads = default_bpb->bsHeads;
@@ -1227,17 +1449,16 @@ void dumpBS(const char *bsFile, int drive)
 
 void put_boot(SYSOptions *opts)
 {
-#ifdef WITHFAT32
   struct bootsectortype32 *bs32;
-#endif
   struct bootsectortype *bs;
-  static unsigned char oldboot[SEC_SIZE], newboot[SEC_SIZE];
-  static unsigned char default_bpb[0x5c];
+  UBYTE oldboot[SEC_SIZE], newboot[SEC_SIZE];
+  UBYTE default_bpb[0x5c];
   int bsBiosMovOff;  /* offset in bs to mov [drive],dl that we NOP out */
 
-#ifdef DEBUG
-  printf("Reading old bootsector from drive %c:\n", opts->dstDrive + 'A');
-#endif
+  if (opts->verbose)
+  {
+    printf("Reading old bootsector from drive %c:\n", opts->dstDrive + 'A');
+  }
 
   /* lock drive */
   generic_block_ioctl(opts->dstDrive + 1, 0x84a, NULL);
@@ -1263,7 +1484,7 @@ void put_boot(SYSOptions *opts)
     saveBS(opts->bsFileOrig, oldboot);
   }
 
-  bs = (struct bootsectortype *)&oldboot;
+  bs = (struct bootsectortype *)oldboot;
 
   if (bs->bsBytesPerSec != SEC_SIZE)
   {
@@ -1286,14 +1507,26 @@ void put_boot(SYSOptions *opts)
     totalSectors = bs32->bsSectors ? bs32->bsSectors : bs32->bsHugeSectors;
     dataSectors = totalSectors
       - bs32->bsResSectors - (bs32->bsFATs * fatSize) - rootDirSectors;
-    clusters = dataSectors / bs32->bsSecPerClust;
- 
-    if (clusters < FAT_MAGIC)        /* < 4085 */
-      fs = FAT12;
-    else if (clusters < FAT_MAGIC16) /* < 65525 */
-      fs = FAT16;
-    else
+    clusters = dataSectors / (((bs32->bsSecPerClust - 1) & 0xFF) + 1);
+
+    if (bs32->bsFATsecs == 0) {
+      if (clusters >= 0xFFFfff5) {     /* FAT32 has 28 significant bits */
+        printf("Too many clusters (%lXh) for FAT32 file system!\n", clusters);
+        exit(1);
+      }
       fs = FAT32;
+      if (clusters < FAT_MAGIC16)
+        smallfat32 = 1;
+    } else {
+      if (clusters < FAT_MAGIC)        /* < 4085 */
+        fs = FAT12;
+      else if (clusters < FAT_MAGIC16) /* < 65525 */
+        fs = FAT16;
+      else {
+        printf("Too many clusters (%lXh) for non-FAT32 file system!\n", clusters);
+        exit(1);
+      }
+    }
   }
 
   /* bit 0 set if function to use current BPB, clear if Device
@@ -1305,11 +1538,12 @@ void put_boot(SYSOptions *opts)
 
   if (fs == FAT32)
   {
-    printf("FAT type: FAT32\n");
+	if (opts->verbose)
+		printf("FAT type: FAT32%s\n", smallfat32 ? " (small)" : "");
     /* get default bpb (but not for floppies) */
     if (opts->dstDrive >= 2 &&
         generic_block_ioctl(opts->dstDrive + 1, 0x4860, default_bpb) == 0)
-      correct_bpb((struct bootsectortype *)(default_bpb + 7 - 11), bs);
+      correct_bpb((struct bootsectortype *)(default_bpb + 7 - 11), bs, opts->verbose);
 
 #ifdef WITHFAT32                /* copy one of the FAT32 boot sectors */
     if (!opts->kernel.stdbs)    /* MS/PC DOS compatible BS requested */
@@ -1318,8 +1552,12 @@ void put_boot(SYSOptions *opts)
              "are not supported.\n", pgm);
       exit(1);
     }
- 
-    memcpy(newboot, haveLBA() ? fat32lba : fat32chs, SEC_SIZE);
+
+    /* user may force explicity lba or chs, otherwise base on if LBA available */
+    if ((opts->force==LBA) || ((opts->force==AUTO) && haveLBA()))
+      memcpy(newboot, fat32lba, SEC_SIZE);
+    else /* either auto mode & no LBA detected or forced CHS */
+      memcpy(newboot, fat32chs, SEC_SIZE);
 #else
     printf("SYS hasn't been compiled with FAT32 support.\n"
            "Consider using -DWITHFAT32 option.\n");
@@ -1328,14 +1566,44 @@ void put_boot(SYSOptions *opts)
   }
   else
   { /* copy the FAT12/16 CHS+LBA boot sector */
-    printf("FAT type: FAT1%c\n", fs + '0' - 10);
+	if (opts->verbose)
+		printf("FAT type: FAT1%c\n", fs + '0' - 10);
     if (opts->dstDrive >= 2 &&
         generic_block_ioctl(opts->dstDrive + 1, 0x860, default_bpb) == 0)
-      correct_bpb((struct bootsectortype *)(default_bpb + 7 - 11), bs);
+      correct_bpb((struct bootsectortype *)(default_bpb + 7 - 11), bs, opts->verbose);
 
     if (opts->kernel.stdbs)
     {
+      /* copy over appropriate boot sector, FAT12 or FAT16 */
       memcpy(newboot, (fs == FAT16) ? fat16com : fat12com, SEC_SIZE);
+
+      /* !!! if boot sector changes then update these locations !!! */
+      {
+          /* magic offset: LBA detection */
+          unsigned offset;
+          offset = (fs == FAT16) ? 0x178 : 0x17B;
+          
+          if ( (newboot[offset]==0x84) && (newboot[offset+1]==0xD2) ) /* test dl,dl */
+          {
+            /* if always use LBA then NOP out conditional jmp over LBA logic if A: */
+            if (opts->force==LBA)
+            {
+                offset+=2;  /* jz */
+                newboot[offset] = 0x90;  /* NOP */  ++offset;
+                newboot[offset] = 0x90;  /* NOP */
+            }
+            else if (opts->force==CHS) /* if force CHS then always skip LBA logic */
+            {
+                newboot[offset] = 0x30;  /* XOR */
+            }
+          }
+          else
+          {
+            printf("%s: Internal error: FAT1%c LBA detect unexpected content\n",
+        	pgm, fs == FAT12 ? '2' : '6');
+            exit(1);
+          }
+      }
     }
     else
     {
@@ -1356,21 +1624,22 @@ void put_boot(SYSOptions *opts)
 #endif
     memcpy(&newboot[SBOFFSET], &oldboot[SBOFFSET], SBSIZE);
 
-  bs = (struct bootsectortype *)&newboot;
+  bs = (struct bootsectortype *)newboot;
 
   /* originally OemName was "FreeDOS", changed for better compatibility */
-  memcpy(bs->OemName, "FRDOS4.1", 8);
+  memcpy(bs->OemName, "FRDOS5.1", 8); /* Win9x seems to require
+                                         5 uppercase letters,
+                                         digit(4 or 5) dot digit */
 
 #ifdef WITHFAT32
   if (fs == FAT32)
   {
-    bs32 = (struct bootsectortype32 *)&newboot;
+    bs32 = (struct bootsectortype32 *)newboot;
     /* ensure appears valid, if not then force valid */
     if ((bs32->bsBackupBoot < 1) || (bs32->bsBackupBoot > bs32->bsResSectors))
     {
-      #ifdef DEBUG
+      if (opts->verbose)
         printf("BPB appears to have invalid backup boot sector #, forcing to default.\n");
-      #endif
       bs32->bsBackupBoot = 0x6; /* ensure set, 6 is MS defined bs size */
     }
     bs32->bsDriveNumber = opts->defBootDrive;
@@ -1386,8 +1655,14 @@ void put_boot(SYSOptions *opts)
     */
     if (opts->kernel.stdbs)
     {
-      ((int *)newboot)[0x78/sizeof(int)] = opts->kernel.loadaddr;
-      bsBiosMovOff = 0x82;
+      /* magic offset: loadsegoff_60 */
+      int defaultload = *(int *)(&newboot[0x78]);
+      if (defaultload != 0x60 && defaultload != 0x70) {
+        printf("%s: Internal error: FAT32 load seg unexpected content\n", pgm);
+        exit(1);
+      }
+      *(int *)(&newboot[0x78]) = opts->kernel.loadaddr;
+      bsBiosMovOff = 0x82;	/* magic offset: mov byte [bp + 40h], dl */
     }
     else /* compatible bs */
     {
@@ -1426,47 +1701,68 @@ void put_boot(SYSOptions *opts)
     */
     if (opts->kernel.stdbs)
     {
+      /* magic offset: loadsegoff_60 */
+      int defaultload = *(int *)(&newboot[0x5C]);
+      if (defaultload != 0x60 && defaultload != 0x70) {
+        printf("%s: Internal error: FAT1%c load seg unexpected content\n",
+        	pgm, fs == FAT12 ? '2' : '6');
+        exit(1);
+      }
       /* this sets the segment we load the kernel to, default is 0x60:0 */
-      ((int *)newboot)[0x5c/sizeof(int)] = opts->kernel.loadaddr;
-      bsBiosMovOff = 0x66;
+      *(int *)(&newboot[0x5C]) = opts->kernel.loadaddr;
+      bsBiosMovOff = 0x66;	/* magic offset: mov byte [bp + 24h], dl */
     }
     else
     {
+      int defaultload;
       /* load segment hard coded to 0x70 in oem compatible boot sector, */
       /* this however changes the offset jumped to default 0x70:0       */
-      if (fs == FAT12)
-        ((int *)newboot)[0x11c/sizeof(int)] = opts->kernel.loadaddr;
-      else
-        ((int *)newboot)[0x119/sizeof(int)] = opts->kernel.loadaddr;
-      bsBiosMovOff = 0x4F;
+      if (fs == FAT12) {
+        /* magic offset: jmp LOADSEG:xxxxh */
+        defaultload = *(int *)(&newboot[0x11A]);
+        *(int *)(&newboot[0x11A]) = opts->kernel.loadaddr;
+      } else {
+        /* magic offset: jmp LOADSEG:xxxxh */
+        defaultload = *(int *)(&newboot[0x118]);
+        *(int *)(&newboot[0x118]) = opts->kernel.loadaddr;
+      }
+      if (defaultload != 0x0 && defaultload != 0x200) {
+        printf("%s: Internal error: OEM FAT1%c load ofs unexpected content\n",
+        	pgm, fs == FAT12 ? '2' : '6');
+        exit(1);
+      }
+      bsBiosMovOff = 0x4F;	/* magic offset: mov byte [bp + 24h], dl */
     }
   }
 
-  if (opts->ignoreBIOS)
+  if ( (newboot[bsBiosMovOff]==0x88) && (newboot[bsBiosMovOff+1]==0x56) )
   {
-    if ( (newboot[bsBiosMovOff]==0x88) && (newboot[bsBiosMovOff+1]==0x56) )
+    if (opts->ignoreBIOS)
     {
       newboot[bsBiosMovOff] = 0x90;  /* NOP */  ++bsBiosMovOff;
       newboot[bsBiosMovOff] = 0x90;  /* NOP */  ++bsBiosMovOff;
       newboot[bsBiosMovOff] = 0x90;  /* NOP */  ++bsBiosMovOff;
-    }
-    else
-    {
-      printf("%s : fat boot sector does not match expected layout\n", pgm);
-      exit(1);
     }
   }
+  else
+  {
+    printf("%s: Internal error: Unit save unexpected content\n", pgm);
+    exit(1);
+  }
 
-#ifdef DEBUG /* add an option to display this on user request? */
+  if (opts->verbose) /* display information about filesystem */
+  {
   printf("Root dir entries = %u\n", bs->bsRootDirEnts);
 
   printf("FAT starts at sector (%lu + %u)\n",
          bs->bsHiddenSecs, bs->bsResSectors);
   printf("Root directory starts at sector (PREVIOUS + %u * %u)\n",
          bs->bsFATsecs, bs->bsFATs);
-#endif
+  }
+  
   {
     int i = 0;
+    /* magic offset: (first) kernel filename */
     memset(&newboot[0x1f1], ' ', 11);
     while (opts->kernel.kernel[i] && opts->kernel.kernel[i] != '.')
     {
@@ -1487,14 +1783,15 @@ void put_boot(SYSOptions *opts)
     }
   }
 
-#ifdef DEBUG
-  /* there's a zero past the kernel name in all boot sectors */
-  printf("Boot sector kernel name set to %s\n", &newboot[0x1f1]);
-  if (opts->kernel.stdbs)
-    printf("Boot sector kernel load segment set to %X:0h\n", opts->kernel.loadaddr);
-  else
-    printf("Boot sector kernel jmp address set to 70:%Xh\n", opts->kernel.loadaddr);
-#endif
+  if (opts->verbose)
+  {
+    /* there's a zero past the kernel name in all boot sectors */
+    printf("Boot sector kernel name set to %s\n", &newboot[0x1f1]);
+    if (opts->kernel.stdbs)
+      printf("Boot sector kernel load segment set to %X:0h\n", opts->kernel.loadaddr);
+    else
+      printf("Boot sector kernel jmp address set to 70:%Xh\n", opts->kernel.loadaddr);
+  }
 
 #ifdef DDEBUG
   printf("\nNew Boot Sector:\n");
@@ -1522,7 +1819,7 @@ void put_boot(SYSOptions *opts)
     */
     if ((fs == FAT32) && !opts->skipBakBSCopy)
     {
-      bs32 = (struct bootsectortype32 *)&newboot;
+      bs32 = (struct bootsectortype32 *)newboot;
 #ifdef DEBUG
       printf("writing backup bootsector to sector %d\n", bs32->bsBackupBoot);
 #endif
@@ -1537,9 +1834,8 @@ void put_boot(SYSOptions *opts)
 
   if (opts->bsFile != NULL)
   {
-#ifdef DEBUG
-    printf("writing new bootsector to file %s\n", opts->bsFile);
-#endif
+    if (opts->verbose)
+      printf("writing new bootsector to file %s\n", opts->bsFile);
 
     saveBS(opts->bsFile, newboot);
   } /* if write boot sector to file*/
@@ -1587,15 +1883,16 @@ BYTE copybuffer[COPY_SIZE];
 /* allocate memory from DOS, return 0 on success, nonzero otherwise */
 int alloc_dos_mem(ULONG memsize, UWORD *theseg)
 {
-#ifdef __TURBOC__
-  if (allocmem((unsigned)((memsize+15)>>4), theseg)==-1)
-#else
   unsigned dseg;
-  if (_dos_allocmem((unsigned)((memsize+15)>>4), &dseg)==0)
-    *theseg = (UWORD)dseg;
+#ifdef __TURBOC__
+  if (allocmem((unsigned)((memsize+15)>>4), &dseg)!=-1)
+#else
+  if (_dos_allocmem((unsigned)((memsize+15)>>4), &dseg)!=0)
 #endif
-    return 0; /* success */
-  return -1; /* failed to allocate memory */
+    return -1; /* failed to allocate memory */
+
+  *theseg = (UWORD)dseg;
+  return 0; /* success */
 }
 #ifdef __TURBOC__
 #define dos_freemem freemem
@@ -1604,7 +1901,7 @@ int alloc_dos_mem(ULONG memsize, UWORD *theseg)
 #endif
 
 /* copies file (path+filename specified by srcFile) to drive:\filename */
-BOOL copy(const BYTE *source, COUNT drive, const BYTE * filename)
+BOOL copy(SYSOptions *opts, const BYTE *source, COUNT drive, const BYTE * filename)
 {
   static BYTE src[SYS_MAXPATH];
   static BYTE dest[SYS_MAXPATH];
@@ -1612,14 +1909,26 @@ BOOL copy(const BYTE *source, COUNT drive, const BYTE * filename)
   int fdin, fdout;
   ULONG copied = 0;
 
-  printf("Copying %s...\n", source);
+#if defined __WATCOMC__ || defined _MSC_VER /* || defined __BORLANDC__ */
+#if defined(__WATCOMC__) && __WATCOMC__ < 1280
+  unsigned short date, time;
+#else
+  unsigned date, time;
+#endif
+#elif defined __TURBOC__
+  struct ftime ftime;
+#endif
+
+  if (opts->verbose)
+	printf("Copying %s...\n", source);
 
   truename(src, source);
   sprintf(dest, "%c:\\%s", 'A' + drive, filename);
   if (stricmp(src, dest) == 0)
   {
-    printf("%s: source and destination are identical: skipping \"%s\"\n",
-           pgm, source);
+	if (opts->verbose)
+		printf("%s: source and destination are identical: skipping \"%s\"\n",
+			   pgm, source);
     return TRUE;
   }
 
@@ -1629,11 +1938,17 @@ BOOL copy(const BYTE *source, COUNT drive, const BYTE * filename)
     return FALSE;
   }
 
+#if defined __WATCOMC__ || defined _MSC_VER /* || defined __BORLANDC__ */
+  _dos_getftime(fdin, &date, &time);
+#elif defined __TURBOC__
+  getftime(fdin, &ftime);
+#endif
+
   if (!check_space(drive, filelength(fdin)))
   {
     printf("%s: Not enough space to transfer %s\n", pgm, filename);
     close(fdin);
-    exit(1);
+    return FALSE;
   }
 
   if ((fdout =
@@ -1661,7 +1976,7 @@ BOOL copy(const BYTE *source, COUNT drive, const BYTE * filename)
   {
     ULONG filesize;
     UWORD theseg;
-    BYTE far *buffer, far *bufptr;
+    BYTE far *buffer; BYTE far *bufptr;
     UWORD offs;
     unsigned chunk_size;
     
@@ -1670,7 +1985,7 @@ BOOL copy(const BYTE *source, COUNT drive, const BYTE * filename)
     if (alloc_dos_mem(filesize, &theseg)!=0)
     {
       printf("Not enough memory to buffer %lu bytes for %s\n", filesize, source);
-      return NULL;
+      return FALSE;
     }
     bufptr = buffer = MK_FP(theseg, 0);
 
@@ -1726,23 +2041,13 @@ BOOL copy(const BYTE *source, COUNT drive, const BYTE * filename)
   }
  #endif
 
-  {
 #if defined __WATCOMC__ || defined _MSC_VER /* || defined __BORLANDC__ */
-#if defined(__WATCOMC__) && __WATCOMC__ < 1280
-    unsigned short date, time;
-#else
-    unsigned date, time;
-#endif
-    _dos_getftime(fdin, &date, &time);
-    _dos_setftime(fdout, date, time);
+  _dos_setftime(fdout, date, time);
 #elif defined __TURBOC__
-    struct ftime ftime;
-    getftime(fdin, &ftime);
-    setftime(fdout, &ftime);
+  setftime(fdout, &ftime);
 #endif
-  }
 
-  close(fdin);
+  /* reduce disk swap on single drives, close file on drive last accessed 1st */
   close(fdout);
 
 #ifdef __SOME_OTHER_COMPILER__
@@ -1756,7 +2061,11 @@ BOOL copy(const BYTE *source, COUNT drive, const BYTE * filename)
   };
 #endif
 
-  printf("%lu Bytes transferred\n", copied);
+  /* and close input file, usually same drive as next action will access */
+  close(fdin);
+
+  if (opts->verbose)
+	printf("%lu Bytes transferred\n", copied);
 
   return TRUE;
 } /* copy */

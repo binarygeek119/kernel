@@ -1,63 +1,58 @@
 # These are generic definitions
 
-# TARGET : we create a $(TARGET).sys file
+#**********************************************************************
+#* TARGET    : we create a %TARGET%.sys file
+#* TARGETOPT : options, handled down to the compiler
+#**********************************************************************
 
-!if $(XCPU)0 == 0
-XCPU=86
-!endif
-CPUOPT=
+TARGETOPT=-1-
+
 !if $(XCPU) == 186
-CPUOPT=-1
+TARGETOPT=-1
+ALLCFLAGS=$(ALLCFLAGS) -DI186
 !endif
 !if $(XCPU) == 386
-CPUOPT=-3
-!endif
-# extension, if compiler supports it, specify compiler switch in XCPU_EX and set XCPU to 386
-!if $(XCPU_EX)0 != 0
-XCPU=386
-CPUOPT=$(XCPU_EX)
+TARGETOPT=-3
+ALLCFLAGS=$(ALLCFLAGS) -DI386
 !endif
 
-!if $(XFAT)0 == 0
-XFAT=32
-!endif
 !if $(XFAT) == 32
-ALLCFLAGS=-DWITHFAT32 $(ALLCFLAGS)
-NASMFLAGS=-DWITHFAT32 $(NASMFLAGS)
+ALLCFLAGS=$(ALLCFLAGS) -DWITHFAT32
+NASMFLAGS=$(NASMFLAGS) -DWITHFAT32
 !endif
 
-NASMFLAGS=-fobj -i../hdr/ -D$(COMPILER) -DXCPU=$(XCPU) $(NASMFLAGS)
+NASM=$(XNASM)
+NASMFLAGS   = $(NASMFLAGS) -i../hdr/ -DXCPU=$(XCPU)
 
-#BINPATH=$(BASE)\bin
-INCLUDEPATH=$(BASE)\include
-LIBPATH=$(BASE)\lib
+LINK=$(XLINK)
+
 INITPATCH=@rem
+DIRSEP=\ #a backslash
+RM=..\utils\rmfiles
+CP=copy
+ECHOTO=..\utils\echoto
+CLDEF=0
 
 !if $(LOADSEG)0 == 0
 LOADSEG=0x60
 !endif
 
-!include "..\mkfiles\$(COMPILER).mak"
+!include "../mkfiles/$(COMPILER).mak"
+
+!if $(CLDEF) == 0
+CLT=$(CL) $(CFLAGST) $(TINY) -I$(INCLUDEPATH)
+CLC=$(CL) $(CFLAGSC) -I$(INCLUDEPATH)
+!endif
 
 TARGET=$(TARGET)$(XCPU)$(XFAT)
-INITCFLAGS=$(INITCFLAGS) $(ALLCFLAGS)
-CFLAGS=$(CFLAGS) $(ALLCFLAGS)
-RM=..\utils\rmfiles
-DEPENDS=makefile ..\*.bat ..\mkfiles\*.*
 
-# Implicit Rules #######################################################
+.asm.obj :
+	$(NASM) -D$(COMPILER) -f obj $(NASMFLAGS) $*.asm
 
-.asm.obj:
-	$(NASM) $(NASMFLAGS) $<
+#               *Implicit Rules*
+.c.obj :
+	$(CC) $(CFLAGS) $*.c
 
-.c.obj:
-	$(CC) $(CFLAGS) $<
+.cpp.obj :
+	$(CC) $(CFLAGS) $*.cpp
 
-.cpp.obj:
-	$(CC) $(CFLAGS) $<
-
-.c.com:
-	$(CL) $(CFLAGST) $<
-
-.c.exe:
-	$(CL) $(CFLAGSC) $<

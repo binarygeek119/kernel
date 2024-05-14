@@ -1,77 +1,66 @@
 @echo off
+rem IF NOTHING COMPILES, CHECK IF YOUR CVS CHECKOUT USES CORRECT DOS LINEBREAKS
+
+:- $Id: buildall.bat 1305 2006-10-31 21:13:02Z bartoldeman $
 
 :----------------------------------------------------------
-:- batch file to build _many_ KERNELS
+:- batch file to build _many_ KERNELS, hope build works.
+:- takes 3 minutes on my(TE) Win2K/P700. your milage may vary :-)
 :----------------------------------------------------------
 
 if "%1" == "$SUMMARY" goto summary
 
+set onerror=if not "%XERROR%" == "" goto daswarwohlnix
+
+:***** MSCL kernels
+
 call config.bat
-if "%LAST%" == "" goto end
+set dos4g=quiet
 
-:***** MSVC kernels
-
-if "%MSC_BASE%" == "" goto no_ms
-		    call build.bat -r msc 386 fat16
-if "%XERROR%" == "" call build.bat -r msc 186 fat16
-if "%XERROR%" == "" call build.bat -r msc  86 fat16
-if "%XERROR%" == "" call build.bat -r msc 386 fat32
-if "%XERROR%" == "" call build.bat -r msc 186 fat32
-if "%XERROR%" == "" call build.bat -r msc  86 fat32
-
-if not "%XERROR%" == "" goto daswarwohlnix
+if "%MS_BASE%" == "" goto no_ms
+call build -r msc 386 fat16
+%ONERROR%
+call build -r msc 186 fat16
+%ONERROR%
+call build -r msc  86 fat16
+%ONERROR%
+call build -r msc 386 fat32
+%ONERROR%
+call build -r msc 186 fat32
+%ONERROR%
+call build -r msc  86 fat32
+%ONERROR%
 :no_ms
 
 :***** TC 2.01 kernels
 
-if "%TC_BASE%" == "" goto no_tc
-		    call build.bat -r tc 186 fat16
-if "%XERROR%" == "" call build.bat -r tc  86 fat16
-if "%XERROR%" == "" call build.bat -r tc 186 fat32
-if "%XERROR%" == "" call build.bat -r tc  86 fat32
-
-if not "%XERROR%" == "" goto daswarwohlnix
+if "%TC2_BASE%" == "" goto no_tc
+call build -r tc   186 fat16
+%ONERROR%
+call build -r tc    86 fat16
+%ONERROR%
+call build -r tc   186 fat32
+%ONERROR%
+call build -r tc    86 fat32
+%ONERROR%
 :no_tc
-
-:***** TCPP kernels
-
-if "%TCPP_BASE%" == "" goto no_tcpp
-		    call build.bat -r tcpp 186 fat16
-if "%XERROR%" == "" call build.bat -r tcpp  86 fat16
-if "%XERROR%" == "" call build.bat -r tcpp 186 fat32
-if "%XERROR%" == "" call build.bat -r tcpp  86 fat32
-
-if not "%XERROR%" == "" goto daswarwohlnix
-:no_tcpp
-
-:***** BC kernels
-
-if "%BC_BASE%" == "" goto no_bc
-		    call build.bat -r bc 386 fat16
-if "%XERROR%" == "" call build.bat -r bc 186 fat16
-if "%XERROR%" == "" call build.bat -r bc  86 fat16
-if "%XERROR%" == "" call build.bat -r bc 386 fat32
-if "%XERROR%" == "" call build.bat -r bc 186 fat32
-if "%XERROR%" == "" call build.bat -r bc  86 fat32
-
-if not "%XERROR%" == "" goto daswarwohlnix
-:no_bc
 
 :***** (Open) Watcom kernels
 
-if "%WATCOM%" == "" goto no_wc
-		    call build.bat -r wc 386 fat32
-if "%XERROR%" == "" call build.bat -r wc 386 fat16
-if "%XERROR%" == "" call build.bat -r wc  86 fat32
-if "%XERROR%" == "" call build.bat -r wc  86 fat16
-
-if not "%XERROR%" == "" goto daswarwohlnix
+if not "%COMPILER%" == "WATCOM" goto no_wc
+call build -r wc    386 fat32
+%ONERROR%
+call build -r wc    386 fat16
+%ONERROR%
+call build -r wc     86 fat32
+%ONERROR%
+call build -r wc     86 fat16
+%ONERROR%
 :no_wc
-
+    
 :***** now rebuild the default kernel
 
-call build.bat -r
-if not "%XERROR%" == "" goto daswarwohlnix
+call build -r
 
 :**************************************************************
 :* now we build a summary of all kernels HMA size + total size
@@ -83,30 +72,30 @@ set Sumfile=bin\ksummary.txt
 set TempSumfile=bin\tsummary.txt
 
 :****echo  >%TempSumfile% Summary of all kernels build
-:****echo.|date  >>%TempSumfile%
-:****echo.|time  >>%TempSumfile%
+:****echo.|date  >>%TempSumfile% 
+:****echo.|time  >>%TempSumfile% 
 :****for %%i in (bin\k*.map) do call %0 $SUMMARY %%i
 
-if exist %Sumfile% del %Sumfile%>nul
-if exist %TempSumfile% del %TempSumfile%>nul
+if exist %Sumfile% del %Sumfile%
+if exist %TempSumfile% del %TempSumfile%
 >ktemp.bat
 for %%i in (bin\k*.map) do echo call %0 $SUMMARY %%i >>ktemp.bat
 sort <ktemp.bat >ktemps.bat
 call ktemps.bat
-del ktemp.bat>nul
-del ktemps.bat>nul
+del ktemp.bat
+del ktemps.bat
 
 echo        >>%Sumfile% Summary of all kernels build
-echo.|date  >>%Sumfile%
-echo.|time  >>%Sumfile%
+echo.|date  >>%Sumfile% 
+echo.|time  >>%Sumfile% 
 find <%TempSumfile% "H" >>%Sumfile%
-del %TempSumfile%>nul
+del %TempSumfile% 
 
 set TempSumfile=
 set Sumfile=
 goto end
 
-:summary
+:summary 
 echo H*************************************************  %2 >>%TempSumfile%
 find<%2 " HMA_TEXT"|find/V "HMA_TEXT_START"|find/V "HMA_TEXT_END">>%TempSumfile%
 find<%2 " STACK">>%TempSumfile%
@@ -116,5 +105,6 @@ goto end
 
 :daswarwohlnix
 echo Sorry, something didn't work as expected :-(
+set ONERROR=
 
 :end

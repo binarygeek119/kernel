@@ -33,7 +33,7 @@
 
 #ifdef VERSION_STRINGS
 static BYTE *blockioRcsId =
-    "$Id$";
+    "$Id: blockio.c 1702 2012-02-04 08:46:16Z perditionc $";
 #endif
 
 #define b_next(bp) ((struct buffer FAR *)(MK_FP(FP_SEG(bp), bp->b_next)))
@@ -47,7 +47,7 @@ static BYTE *blockioRcsId =
 /************************************************************************/
 /* #define DISPLAY_GETBLOCK */
 
-STATIC VOID flush1(struct buffer FAR * bp);
+STATIC BOOL flush1(struct buffer FAR * bp);
 
 /*
     this searches the buffer list for the given disk/block.
@@ -155,7 +155,7 @@ STATIC struct buffer FAR *searchblock(ULONG blkno, COUNT dsk)
   return bp;
 }
 
-VOID DeleteBlockInBufferCache(ULONG blknolow, ULONG blknohigh, COUNT dsk, int mode)
+BOOL DeleteBlockInBufferCache(ULONG blknolow, ULONG blknohigh, COUNT dsk, int mode)
 {
   struct buffer FAR *bp = firstbuf;
         
@@ -176,6 +176,8 @@ VOID DeleteBlockInBufferCache(ULONG blknolow, ULONG blknohigh, COUNT dsk, int mo
     bp = b_next(bp);
   }
   while (FP_OFF(bp) != FP_OFF(firstbuf));
+
+  return FALSE;
 }
 
 #if TOM
@@ -224,7 +226,8 @@ struct buffer FAR *getblk(ULONG blkno, COUNT dsk, BOOL overwrite)
   /* available, and fill it with the desired block                */
 
   /* take the buffer that lbp points to and flush it, then read new block. */
-  flush1(bp);
+  if (!flush1(bp))
+    return NULL;
 
   /* Fill the indicated disk buffer with the current track and sector */
 
@@ -256,77 +259,106 @@ VOID setinvld(REG COUNT dsk)
   while (FP_OFF(bp) != FP_OFF(firstbuf));
 }
 
+/*      Check if there is at least one dirty buffer                     */
 /*                                                                      */
-/*                      Flush all buffers for a disk                    */
-/*                                                                      */
-VOID flush_buffers(REG COUNT dsk)
+BOOL dirty_buffers(REG COUNT dsk)
 {
   struct buffer FAR *bp = firstbuf;
 
   do
   {
-    if (bp->b_unit == dsk)
-      flush1(bp);
+    if (bp->b_unit == dsk &&
+        (bp->b_flag & (BFR_VALID | BFR_DIRTY)) == (BFR_VALID | BFR_DIRTY))
+      return TRUE;
     bp = b_next(bp);
   }
   while (FP_OFF(bp) != FP_OFF(firstbuf));
+  return FALSE;
+}
+
+/*                                                                      */
+/*                                                                      */
+/*                      Flush all buffers for a disk                    */
+/*                                                                      */
+/*      returns:                                                        */
+/*              TRUE on success                                         */
+/*                                                                      */
+BOOL flush_buffers(REG COUNT dsk)
+{
+  struct buffer FAR *bp = firstbuf;
+  REG BOOL ok = TRUE;
+
+  bp = firstbuf;
+  do
+  {
+    if (bp->b_unit == dsk)
+      if (!flush1(bp))
+        ok = FALSE;
+    bp = b_next(bp);
+  }
+  while (FP_OFF(bp) != FP_OFF(firstbuf));
+  return ok;
 }
 
 /*                                                                      */
 /*      Write one disk buffer                                           */
 /*                                                                      */
-STATIC VOID flush1(struct buffer FAR * bp)
+STATIC BOOL flush1(struct buffer FAR * bp)
 {
-/* All lines with changes on 9/4/00 by BER marked below */
-
-  UWORD result;                 /* BER 9/4/00 */
+  BOOL ok = TRUE;
 
   if ((bp->b_flag & (BFR_VALID | BFR_DIRTY)) == (BFR_VALID | BFR_DIRTY))
   {
-    /* BER 9/4/00  */
-    result = dskxfer(bp->b_unit, bp->b_blkno, bp->b_buffer, 1, DSKWRITE);
+#ifdef WITHFAT32
+    ULONG b_offset = 0;
+#else
+    UWORD b_offset = 0;
+#endif
+    UBYTE b_copies = 1;
+    ULONG blkno = bp->b_blkno;
     if (bp->b_flag & BFR_FAT)
     {
-      UWORD b_copies = bp->b_copies;
-      ULONG blkno = bp->b_blkno;
+      b_copies = bp->b_copies;
+      b_offset = bp->b_offset;
 #ifdef WITHFAT32
-      ULONG b_offset = bp->b_offset;
       if (b_offset == 0) /* FAT32 FS */
         b_offset = bp->b_dpbp->dpb_xfatsize;
-#else
-      UWORD b_offset = bp->b_offset;
 #endif
-      while (--b_copies > 0)
-      {
-        blkno += b_offset;
-        /* BER 9/4/00 */
-        result = dskxfer(bp->b_unit, blkno, bp->b_buffer, 1, DSKWRITE);
-      }
+    }
+    while (b_copies--)
+    {
+      if (dskxfer(bp->b_unit, blkno, bp->b_buffer, 1, DSKWRITE))
+        ok = FALSE;
+      blkno += b_offset;
     }
   }
-  else
-    result = 0;                 /* This negates any error code returned in result...BER */
-  /* and 0 returned, if no errors occurred - tom          */
   bp->b_flag &= ~BFR_DIRTY;     /* even if error, mark not dirty */
-  if (result != 0)              /* otherwise system has trouble  */
+  if (!ok)                      /* otherwise system has trouble  */
     bp->b_flag &= ~BFR_VALID;   /* continuing.           */
+  return ok;
 }
 
 /*                                                                      */
 /*      Write all disk buffers                                          */
 /*                                                                      */
-VOID flush(VOID)
+BOOL flush(void)
 {
   REG struct buffer FAR *bp = firstbuf;
+  REG BOOL ok;
 
+  ok = TRUE;
   do
   {
-    flush1(bp);
+    if (!flush1(bp))
+      ok = FALSE;
     bp->b_flag &= ~BFR_VALID;
     bp = b_next(bp);
   }
   while (FP_OFF(bp) != FP_OFF(firstbuf));
+
   network_redirector(REM_FLUSHALL);
+
+  return (ok);
 }
 
 /************************************************************************/
@@ -404,10 +436,10 @@ UWORD dskxfer(COUNT dsk, ULONG blkno, VOID FAR * buf, UWORD numblocks,
     {
       IoReqHdr.r_trans = deblock_buf;
       if (mode == DSKWRITE)
-        fmemcpy(deblock_buf, buf, SEC_SIZE);
+        fmemcpy(deblock_buf, buf, dpbp->dpb_secsize);
       execrh((request FAR *) & IoReqHdr, dpbp->dpb_device);
       if (mode == DSKREAD)
-        fmemcpy(buf, deblock_buf, SEC_SIZE);
+        fmemcpy(buf, deblock_buf, dpbp->dpb_secsize);
     }
     else
     {
