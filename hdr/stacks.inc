@@ -25,7 +25,7 @@
 ; write to the Free Software Foundation, 675 Mass Ave,
 ; Cambridge, MA 02139, USA.
 ;
-; $Id: stacks.inc 1591 2011-05-06 01:46:55Z bartoldeman $
+; $Id$
 ;
 
 ;
@@ -136,117 +136,51 @@ irp_hi    equ 26
 	%macro  Protect386Registers 0
 	%endmacro
 	
-	%macro  RestoreSP 0
-		mov sp, bp  
-	%endmacro
-
 	%macro  Restore386Registers 0
 	%endmacro
 
-%ELSE           
-	%ifdef WATCOM
 
+%ELSE           
 	%macro  Protect386Registers  0
+
+	%ifdef WATCOM
 		push fs
 		push gs
-	%endmacro
-
-	%macro  RestoreSP 0
-		lea sp, [bp-4]
-	%endmacro
-
-	%macro  Restore386Registers  0
-		pop gs
-		pop fs
-	%endmacro
-
 	%else
-
-	%macro  Protect386Registers  0
 		push eax
 		pop ax
-        %ifdef MSCL8
+        %ifdef MSC
 		push ecx
 		pop cx
-        %else ;BC5
+        %else ;BC
 		push ebx
 		pop bx
         %endif
 		push edx
 		pop dx
-	%endmacro
+	%endif
 
-	%macro  RestoreSP 0
-		lea sp, [bp-6]
 	%endmacro
 
 	%macro  Restore386Registers  0
+
+	%ifdef WATCOM
+		pop gs
+		pop fs
+	%else
 		push dx
 		pop edx
-        %ifdef MSCL8
+        %ifdef MSC
 		push cx
 		pop ecx
-        %else ;BC5
+        %else ;BC
 		push bx
 		pop ebx
         %endif
 		push ax
 		pop eax
+	%endif
+
 	%endmacro
 
-	%endif
 %ENDIF
-
-; macros to define stack arguments
-; arg a, {b,4}, c
-; defines a and c as "word" arguments and b as a "dword" argument
-; for STDCALL defines .a as [bp+4], .b as [bp+6] and .c as [bp+10]
-; for PASCAL  defines .a as [bp+10], .b as [bp+6] and .c as [bp+4]
-;
-; popargs bx, {dx,ax}, cx pops these arguments of the stack (for PASCAL
-; in reverse order). Here dx,ax is a dword argument dx:ax where dx is
-; the high word. The caller is responsible for dealing with instruction
-; pointer (ip) on the stack.
-
-%ifdef gcc
-%define STDCALL
-%else
-%define PASCAL
-%endif
-
-%macro  definearg 1-2 2
-	%xdefine .%1 bp+.argloc
-	%assign .argloc .argloc+%2
-%endmacro
-
-%macro  arg 1-*
-	%assign .argloc 4
-	%rep  %0
-		%ifdef PASCAL
-			%rotate -1
-		%endif
-		definearg %1
-		%ifdef STDCALL
-			%rotate 1
-		%endif
-	%endrep
-%endmacro
-
-%macro  multipop 1-*
-	%rep %0
-		%rotate -1
-		pop %1
-	%endrep
-%endmacro
-
-%macro  popargs 1-*
-	%rep  %0
-		%ifdef PASCAL
-			%rotate -1
-		%endif
-		multipop %1
-		%ifdef STDCALL
-			%rotate 1
-		%endif
-	%endrep
-%endmacro

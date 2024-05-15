@@ -33,13 +33,11 @@
 #ifdef MAIN
 #ifdef VERSION_STRINGS
 static BYTE *buffer_hRcsId =
-    "$Id: buffer.h 1702 2012-02-04 08:46:16Z perditionc $";
+    "$Id$";
 #endif
 #endif
 
-#include "dsk.h"                /* only for MAX_SEC_SIZE        */
-#define BUFFERSIZE MAX_SEC_SIZE
-
+#define BUFFERSIZE 512
 struct buffer {
   UWORD b_next;                 /* next buffer in LRU list      */
   UWORD b_prev;                 /* previous buffer in LRU list  */

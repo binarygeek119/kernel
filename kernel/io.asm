@@ -31,18 +31,18 @@
                 %include "segs.inc"
                 %include "stacks.inc"
 
-                extern   ConTable
-                extern   LptTable
-                extern   ComTable
-                extern   uPrtNo
-                extern   CommonNdRdExit
-;!!                extern   _NumFloppies
-                extern   blk_stk_top
-                extern   clk_stk_top
+                extern   ConTable:wrt LGROUP
+                extern   LptTable:wrt LGROUP
+                extern   ComTable:wrt LGROUP
+                extern   uPrtNo:wrt LGROUP
+                extern   CommonNdRdExit:wrt LGROUP
+;!!                extern   _NumFloppies:wrt DGROUP
+                extern   blk_stk_top:wrt DGROUP
+                extern   clk_stk_top:wrt DGROUP
                 extern   _reloc_call_blk_driver
                 extern   _reloc_call_clk_driver
 
-                extern   _TEXT_DGROUP
+                extern   _TEXT_DGROUP:wrt LGROUP                
 
 ;---------------------------------------------------
 ;
@@ -212,7 +212,6 @@ uUnitNumber	dw	0
 ;       at any time.  The request is stored into memory in the one and only
 ;       location available for that purpose.
 ;
-                global GenStrategy
 GenStrategy:
                 mov     word [cs:_ReqPktPtr],bx
                 mov     word [cs:_ReqPktPtr+2],es
@@ -501,12 +500,12 @@ GetUnitNum:
 blk_driver_params:
                    dw  blk_stk_top
                    dw  _reloc_call_blk_driver
-                   dw  DGROUP
+                   dw  seg _reloc_call_blk_driver
 
 clk_driver_params:
                    dw  clk_stk_top
                    dw  _reloc_call_clk_driver
-                   dw  DGROUP
+                   dw  seg _reloc_call_clk_driver
 
                 ; clock device interrupt
 clk_entry:

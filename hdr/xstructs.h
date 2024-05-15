@@ -9,7 +9,7 @@
 #ifdef MAIN
 #ifdef VERSION_STRINGS
 static BYTE *XStructs_hRcsId =
-    "$Id: xstructs.h 1457 2009-06-26 20:00:41Z bartoldeman $";
+    "$Id$";
 #endif
 #endif
 
@@ -64,19 +64,20 @@ struct xdpbforformat {
     } rebuilddpb;
 
     struct {
-      DWORD new;                /* new active FAT/mirroring state, or -1 to get
+      DWORD newmirroring;       /* new active FAT/mirroring state, or -1 to get
                                    bits 3-0: the 0-based FAT number of the active FAT
                                    bits 6-4: reserved (0)
                                    bit 7: do not mirror active FAT to inactive FATs
-                                   or:
-                                   set new root directory cluster, -1 - get current
                                  */
-      DWORD old;                 /* previous active FAT/mirroring state (as above)
-                                    or
-                                    get previous root directory cluster
-                                 */
+      DWORD oldmirroring;       /* previous active FAT/mirroring state (as above) */
       UDWORD reserved[2];
-    } setget;
+    } setmirroring;
+
+    struct {
+      DWORD newrootclst;        /* set new root directory cluster, -1 - get current */
+      DWORD oldrootclst;        /* get previous root directory cluster */
+      UDWORD reserved[2];
+    } setroot;
   } xdff_f;
 };
 

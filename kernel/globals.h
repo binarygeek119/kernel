@@ -27,10 +27,13 @@
 /* Cambridge, MA 02139, USA.                                    */
 /****************************************************************/
 
+#ifndef __GLOBALS_H
+#define __GLOBALS_H
+
 #ifdef VERSION_STRINGS
 #ifdef MAIN
 static BYTE *Globals_hRcsId =
-    "$Id: globals.h 1705 2012-02-07 08:10:33Z perditionc $";
+    "$Id$";
 #endif
 #endif
 
@@ -46,8 +49,8 @@ static BYTE *Globals_hRcsId =
 #include "sft.h"
 #include "cds.h"
 #include "exe.h"
-#include "dirmatch.h"
 #include "fnode.h"
+#include "dirmatch.h"
 #include "file.h"
 #include "clock.h"
 #include "kbd.h"
@@ -156,17 +159,19 @@ typedef BYTE *UPMAP;
 /*                                                                      */
 /* External Assembly variables                                          */
 /*                                                                      */
-extern struct dhdr FAR ASM clk_dev; /* Clock device driver                  */
-extern struct dhdr FAR ASM con_dev; /* Console device driver                */
-extern struct dhdr FAR ASM prn_dev; /* Generic printer device driver        */
-extern struct dhdr FAR ASM aux_dev; /* Generic aux device driver            */
-extern struct dhdr FAR ASM blk_dev; /* Block device (Disk) driver           */
+extern struct dhdr
+FAR ASM clk_dev,                    /* Clock device driver                  */
+  FAR ASM con_dev,                  /* Console device driver                */
+  FAR ASM prn_dev,                  /* Generic printer device driver        */
+  FAR ASM aux_dev,                  /* Generic aux device driver            */
+  FAR ASM blk_dev;                  /* Block device (Disk) driver           */
 extern COUNT *error_tos,        /* error stack                          */
   disk_api_tos,                 /* API handler stack - disk fns         */
   char_api_tos;                 /* API handler stack - char fns         */
-extern BYTE FAR _HMATextAvailable;  /* first byte of available CODE area    */
-extern BYTE FAR _HMATextStart[];    /* first byte of HMAable CODE area      */
-extern BYTE FAR _HMATextEnd[];      /* and the last byte of it              */
+extern BYTE FAR _InitTextStart; /* first available byte of ram          */
+extern BYTE FAR _HMATextAvailable,      /* first byte of available CODE area    */
+  FAR _HMATextStart[],          /* first byte of HMAable CODE area      */
+  FAR _HMATextEnd[];            /* and the last byte of it              */
 extern
 BYTE DosLoadedInHMA;            /* if InitHMA has moved DOS up          */
 
@@ -201,7 +206,7 @@ GLOBAL WORD bDumpRdWrParms
 #if 0                           /* defined in MAIN.C now to save low memory */
 
 GLOBAL BYTE copyright[] =
-    "(C) Copyright 1995-2006 Pasquale J. Villani and The FreeDOS Project.\n"
+    "(C) Copyright 1995-2001 Pasquale J. Villani and The FreeDOS Project.\n"
     "All Rights Reserved. This is free software and comes with ABSOLUTELY NO\n"
     "WARRANTY; you can redistribute it and/or modify it under the terms of the\n"
     "GNU General Public License as published by the Free Software Foundation;\n"
@@ -211,7 +216,11 @@ GLOBAL BYTE copyright[] =
 
 GLOBAL const BYTE ASM os_release[]
 #ifdef MAIN
-    = KERNEL_VERSION_STRING
+#if 0
+    = "DOS-C version %d.%d Beta %d [FreeDOS Release] (Build %d).\n"
+#endif
+    = "FreeDOS kernel version " KERNEL_VERSION_STRING
+    " (Build " KERNEL_BUILD_STRING ", " __DATE__ ")\n"
 #if 0
     "For technical information and description of the DOS-C operating system\n\
 consult \"FreeDOS Kernel\" by Pat Villani, published by Miller\n\
@@ -222,22 +231,23 @@ Freeman Publishing, Lawrence KS, USA (ISBN 0-87930-436-7).\n\
  ;
 
 /* Globally referenced variables - WARNING: ORDER IS DEFINED IN         */
-/* KERNEL.ASM AND MUST NOT BE CHANGED. DO NOT CHANGE ORDER BECAUSE THEY */
-/* ARE DOCUMENTED AS UNDOCUMENTED (?) AND HAVE MANY  PROGRAMS AND TSRs  */
+/* KERNAL.ASM AND MUST NOT BE CHANGED. DO NOT CHANGE ORDER BECAUSE THEY */
+/* ARE DOCUMENTED AS UNDOCUMENTED (?) AND HAVE MANY  PROGRAMS AND TSR'S */
 /* ACCESSING THEM                                                       */
 
 extern UWORD ASM NetBios;
 extern BYTE * ASM net_name;
 extern BYTE ASM net_set_count;
-extern BYTE ASM NetDelay, ASM NetRetry;
+extern UWORD ASM NetDelay, ASM NetRetry;
 
 extern UWORD ASM first_mcb,         /* Start of user memory                 */
   ASM uppermem_root;                /* Start of umb chain (usually 9fff)    */
 extern char * ASM inputptr;         /* pointer to unread CON input          */ 
 extern sfttbl FAR * ASM sfthead;    /* System File Table head               */
-extern struct dhdr FAR * ASM clock; /* CLOCK$ device                        */
-extern struct dhdr FAR * ASM syscon;/* console device                       */
-extern WORD ASM maxsecsize;         /* largest sector size in use (can use) */
+extern struct dhdr
+FAR * ASM clock,                    /* CLOCK$ device                        */
+  FAR * ASM syscon;                 /* console device                       */
+extern WORD ASM maxbksize;          /* Number of Drives in system           */
 extern struct buffer
 FAR *ASM firstbuf;                  /* head of buffers linked list          */
 enum {LOC_CONV=0, LOC_HMA=1};
@@ -267,8 +277,6 @@ extern BYTE ASM ErrorMode,          /* Critical error flag                  */
   ASM dosidle_flag, ASM Server_Call, ASM CritErrLocus, ASM CritErrAction, 
   ASM CritErrClass, ASM VgaSet, 
   ASM njoined;                      /* number of joined devices             */
-
-extern VOID FAR * ASM setverPtr;    /* Pointer to SETVER list               */
 
 extern UWORD ASM Int21AX;
 extern COUNT ASM CritErrCode;
@@ -302,7 +310,6 @@ extern UWORD ASM wAttr;
 extern BYTE ASM default_drive;      /* default drive for dos                */
 
 extern dmatch ASM sda_tmp_dm;       /* Temporary directory match buffer     */
-extern dmatch ASM sda_tmp_dm_ren;   /* 2nd Temporary directory match buffer */
 extern BYTE
   ASM internal_data[],              /* sda areas                            */
   ASM swap_always[],                /*  "    "                              */
@@ -326,14 +333,13 @@ extern BYTE ASM verify_ena,         /* verify enabled flag                  */
 extern UWORD ASM return_code;       /* Process termination rets             */
 
 extern UBYTE ASM BootDrive,         /* Drive we came up from                */
-  ASM CPULevel,                     /* CPU family, 0=8086, 1=186, ...       */
   ASM scr_pos;                      /* screen position for bs, ht, etc      */
 /*extern WORD
   NumFloppies; !!*//* How many floppies we have            */
 
 extern keyboard ASM kb_buf;
 extern char ASM local_buffer[LINEBUFSIZE0A];
-extern UBYTE DiskTransferBuffer[/*SEC_SIZE*/];
+extern UBYTE DiskTransferBuffer[SEC_SIZE];
 
 extern struct cds
   ASM TempCDS;
@@ -347,6 +353,9 @@ GLOBAL WORD dump_regs;          /* dump registers of bad call           */
 
 #endif
 
+extern struct f_node FAR * ASM f_nodes;  /* pointer to the array        */
+extern UWORD ASM f_nodes_cnt;   /* number of allocated f_nodes          */
+
 /*                                                                      */
 /* Function prototypes - automatically generated                        */
 /*                                                                      */
@@ -354,8 +363,7 @@ GLOBAL WORD dump_regs;          /* dump registers of bad call           */
 
 /* Process related functions - not under automatic generation.  */
 /* Typically, these are in ".asm" files.                        */
-VOID ASMCFUNC FAR cpm_entry(VOID)
-/*INRPT FAR handle_break(VOID) */ ;
+VOID ASMCFUNC FAR cpm_entry(VOID);
 COUNT ASMCFUNC
     CriticalError(COUNT nFlag, COUNT nDrive, COUNT nError,
                            struct dhdr FAR * lpDevice);
@@ -365,7 +373,6 @@ VOID ASMCFUNC FAR CharMapSrvc(VOID);
 VOID ASMCFUNC FAR set_stack(VOID);
 VOID ASMCFUNC FAR restore_stack(VOID);
 #endif
-/*VOID INRPT FAR handle_break(VOID); */
 
 ULONG ASMPASCAL ReadPCClock(VOID);
 VOID ASMPASCAL WriteATClock(BYTE *, BYTE, BYTE, BYTE);
@@ -413,17 +420,11 @@ void setvec(unsigned char intno, intvec vector);
 #pragma aux (cdecl) spawn_int23 aborts;
 #endif
 void ASMCFUNC spawn_int23(void);        /* procsupt.asm */
-void ASMCFUNC DosIdle_hlt(void);        /* dosidle.asm */
 
-GLOBAL BYTE ASM ReturnAnyDosVersionExpected;
-GLOBAL BYTE ASM HaltCpuWhileIdle;
+GLOBAL BYTE ReturnAnyDosVersionExpected;
 
-/* near fnodes:
- * fnode[0] is used internally for almost all cases.
- * fnode[1] is only used for:
- * 1) rename (target)
- * 2) rmdir (checks if the directory to remove is empty)
- * 3) commit (copies, than closes fnode[0])
- * 3) merge_file_changes (for SHARE)
- */
 GLOBAL struct f_node fnode[2];
+GLOBAL int fnode_fd[2];
+
+#endif /* __GLOBALS_H */
+

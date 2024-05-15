@@ -33,7 +33,7 @@
 
 #ifdef VERSION_STRINGS
 static BYTE *RcsId =
-    "$Id: systime.c 683 2003-09-09 17:43:43Z bartoldeman $";
+    "$Id$";
 #endif
 
 const UWORD days[2][13] = {

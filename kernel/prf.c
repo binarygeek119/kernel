@@ -27,27 +27,26 @@
 /****************************************************************/
 
 #include "portab.h"
+#include "debug.h"
 
 #ifdef FORSYS
-#ifdef __GNUC__
-#include <unistd.h>
-#else
 #include <io.h>
-#endif
 #include <stdarg.h>
 #endif
 
 #ifdef _INIT
 #define handle_char init_handle_char
 #define put_console init_put_console
-#define ltob init_ltob
 #define do_printf init_do_printf
 #define printf init_printf
 #define sprintf init_sprintf
 #define charp init_charp
 #endif
 
-#include "debug.h"  /* must be below xx to init_xx */
+#ifdef VERSION_STRINGS
+static BYTE *prfRcsId =
+    "$Id$";
+#endif
 
 /* special console output routine */
 /*#define DOSEMU */
@@ -62,7 +61,7 @@ void put_console(int c)
   if (buff_offset >= MAX_BUFSIZE)
   {
     buff_offset = 0;
-    DebugPrintf(("Printf buffer overflow!\n"));
+    printf("Printf buffer overflow!\n");
   }
   if (c == '\n')
   {
@@ -73,12 +72,6 @@ void put_console(int c)
     _DX = FP_OFF(buff);
     _AX = 0x13;
     __int__(0xe6);
-#elif defined(__GNUC__)
-    asm volatile(
-      "int $0xe6\n"
-      : /* outputs */
-      : /* inputs */ "a"(0x13), "e"(FP_SEG(buff)), "d"(FP_OFF(buff))
-    );
 #elif defined(I86)
     asm
       {
@@ -125,8 +118,6 @@ void put_console(int c)
 #if defined DEBUG_PRINT_COMPORT
   fastComPrint(c);
 #endif
-#elif defined(__GNUC__)
-  asm volatile("int $0x29" : : "a"(c) : "bx");
 #elif defined(I86)
   __asm
   {
@@ -140,26 +131,19 @@ void put_console(int c)
 
 #if defined(DEBUG_NEED_PRINTF) || defined(FORSYS) || defined(_INIT) || defined(TEST)
 
-#if defined(DEBUG_NEED_PRINTF) && !defined(_INIT) && !defined(FORSYS)
-/* need to use FAR pointers for resident DEBUG printf()s where SS != DS */
-#define SSFAR FAR
-#else
-#define SSFAR
-#endif
-
 #ifndef FORSYS
 /* copied from bcc (Bruce's C compiler) stdarg.h */
-typedef char SSFAR *va_list;
+typedef char FAR *va_list;
 #define va_start(arg, last) ((arg) = (va_list) (&(last)+1))
-#define va_arg(arg, type) (((type SSFAR *)(arg+=sizeof(type)))[-1])
+#define va_arg(arg, type) (((type FAR *)(arg+=sizeof(type)))[-1])
 #define va_end(arg)
 #endif
 
-static BYTE SSFAR *charp = 0;
+static BYTE FAR *charp = 0;
 
 STATIC VOID handle_char(COUNT);
-STATIC void ltob(LONG, BYTE SSFAR *, COUNT);
-STATIC void do_printf(const char *, REG va_list);
+STATIC void do_printf(const char FAR *, va_list);
+VOID VA_CDECL printf(const char FAR * fmt, ...);
 
 /* special handler to switch between sprintf and printf */
 STATIC VOID handle_char(COUNT c)
@@ -168,47 +152,11 @@ STATIC VOID handle_char(COUNT c)
     put_console(c);
   else
 #ifdef DEBUG_PRINT_COMPORT
-  if (charp == (BYTE SSFAR *)-1)
+  if (charp == (BYTE FAR *)-1)
     fastComPrint(c);
   else
 #endif
     *charp++ = c;
-}
-
-/* ltob -- convert an long integer to a string in any base (2-16) */
-STATIC void ltob(LONG n, BYTE SSFAR * s, COUNT base)
-{
-  ULONG u;
-  BYTE SSFAR *p;
-  BYTE SSFAR *q;
-  int c;
-
-  u = n;
-
-  if (base == -10)              /* signals signed conversion */
-  {
-    base = 10;
-    if (n < 0)
-    {
-      u = -n;
-      *s++ = '-';
-    }
-  }
-
-  p = s;
-  do
-  {                             /* generate digits in reverse order */
-    *p++ = "0123456789abcdef"[(UWORD) (u % base)];
-  }
-  while ((u /= base) > 0);
-
-  *p = '\0';                    /* terminate the string */
-  for (q = s; q < --p; q++)
-  {                             /* reverse the digits */
-    c = *q;
-    *q = *p;
-    *p = c;
-  }
 }
 
 #define LEFT    0
@@ -217,17 +165,15 @@ STATIC void ltob(LONG n, BYTE SSFAR * s, COUNT base)
 #define LONGARG 4
 
 /* printf -- short version of printf to conserve space */
-int VA_CDECL printf(CONST char *fmt, ...)
+VOID VA_CDECL printf(CONST BYTE FAR *fmt, ...)
 {
   va_list arg;
   va_start(arg, fmt);
   charp = 0;
   do_printf(fmt, arg);
-  return 0;
 }
 
-#if defined(DEBUG_NEED_PRINTF) && !defined(_INIT) && !defined(FORSYS)
-STATIC int VA_CDECL fsprintf(char FAR * buff, CONST char * fmt, ...)
+VOID VA_CDECL sprintf(char FAR * buff, CONST BYTE FAR * fmt, ...)
 {
   va_list arg;
 
@@ -235,42 +181,23 @@ STATIC int VA_CDECL fsprintf(char FAR * buff, CONST char * fmt, ...)
   charp = buff;
   do_printf(fmt, arg);
   handle_char('\0');
-  return 0;
-}
-#else
-#define fsprintf sprintf
-#endif
-
-int VA_CDECL sprintf(char * buff, CONST char * fmt, ...)
-{
-  va_list arg;
-
-  va_start(arg, fmt);
-  charp = buff;
-  do_printf(fmt, arg);
-  handle_char('\0');
-  return 0;
 }
 
 #ifdef DEBUG_PRINT_COMPORT
-int dbgc_printf(CONST char * fmt, ...)
+VOID dbgc_printf(CONST BYTE FAR * fmt, ...)
 {
   va_list arg;
-
   va_start(arg, fmt);
-  charp = (BYTE SSFAR *)-1;
+  charp = (BYTE FAR *)-1;
   do_printf(fmt, arg);
-  handle_char('\0');
-  return 0;
 }
 #endif
 
-STATIC void do_printf(CONST BYTE * fmt, va_list arg)
+STATIC void do_printf(CONST BYTE FAR * fmt, va_list arg)
 {
   int base, size;
-  BYTE s[13]; /* long enough for a 32-bit octal number string with sign */
-  BYTE flags;
-  BYTE FAR *p;
+  char s[13]; /* long enough for a 32-bit octal number string with sign */
+  char flags, FAR *p;
 
   for (;*fmt != '\0'; fmt++)
   {
@@ -324,8 +251,8 @@ STATIC void do_printf(CONST BYTE * fmt, va_list arg)
       case 'p':
         {
           UWORD w0 = va_arg(arg, unsigned);
-          char SSFAR *tmp = charp;
-          fsprintf(s, "%04x:%04x", va_arg(arg, unsigned), w0);
+          char FAR *tmp = charp;
+          sprintf(s, "%04x:%04x", va_arg(arg, unsigned), w0);
           p = s;
           charp = tmp;
           break;
@@ -361,23 +288,42 @@ STATIC void do_printf(CONST BYTE * fmt, va_list arg)
 
     lprt:
         {
-          long currentArg;
+          long n;
+          ULONG u;
+          BOOL minus = FALSE;
+          BYTE FAR *t = s + sizeof(s) - 1;
+
           if (flags & LONGARG)
-            currentArg = va_arg(arg, long);
+            n = va_arg(arg, long);
           else
           {
-            currentArg = va_arg(arg, int);
+            n = va_arg(arg, int);
             if (base >= 0)
-              currentArg =  (long)(unsigned)currentArg;
+              n = (long)(unsigned)n;
           }
-          ltob(currentArg, s, base);
-          p = s;
+          /* convert a long integer to a string in any base (2-16) */
+          u = n;
+          if (base < 0)               /* signals signed conversion */
+          {
+            base = -base;
+            if (n < 0)
+            {
+              u = -n;
+              minus++;
+            }
+          }
+          *t = '\0';                /* terminate the number string */
+          do                   /* generate digits in reverse order */
+            *--t = "0123456789ABCDEF"[(UWORD)(u % base)];
+          while ((u /= base) > 0);
+          if (minus)
+            *--t = '-';
+          p = t;
         }
         break;
 
       default:
         handle_char('?');
-      case '%':
 
         handle_char(*fmt);
         continue;
@@ -404,11 +350,10 @@ STATIC void do_printf(CONST BYTE * fmt, va_list arg)
   }
   va_end(arg);
 }
-
 #endif
 #if !defined(FORSYS) && !defined(_INIT)
 
-extern void put_string(const char *);
+extern void put_string(const char FAR *);
 extern void put_unsigned(unsigned, int, int);
 
 void hexd(char *title, UBYTE FAR * p, COUNT numBytes)
@@ -438,22 +383,18 @@ void hexd(char *title, UBYTE FAR * p, COUNT numBytes)
 /* put_unsigned -- print unsigned int in base 2--16 */
 void put_unsigned(unsigned n, int base, int width)
 {
-  char s[6];
-  int i;
+  char s[6];   /* CAUTION: width must be [0..5] and is not checked! */
 
-  for (i = 0; i < width; i++)
+  s[width] = '\0';                   /* terminate the number string */
+  while (--width >= 0)
   {                             /* generate digits in reverse order */
-    s[i] = "0123456789abcdef"[(UWORD) (n % base)];
+    s[width] = "0123456789ABCDEF"[n % base];
     n /= base;
   }
-
-  while(i != 0)
-  {                             /* print digits in reverse order */
-    put_console(s[--i]);
-  }
+  put_string(s);
 }
 
-void put_string(const char *s)
+void put_string(const char FAR *s)
 {
   while(*s != '\0')
     put_console(*s++);
@@ -463,23 +404,18 @@ void put_string(const char *s)
 
 #ifdef TEST
 /*
-        this testprogram verifies that the strings are printed correctly
-        ( or the way, I expect them to print)
-        
-        compile like (note -DTEST !)
+	this testprogram verifies that the strings are printed correctly
+	( or the way, I expect them to print)
+	
+	compile like (note -DTEST !)
 
-        c:\tc\tcc -DTEST -DI86 -I..\hdr prf.c
-        
-        and run. if strings are wrong, the program will wait for the ANYKEY
+	c:\tc\tcc -DTEST -Ihdr kernel\prf.c
+	
+	and run. If strings are wrong, the program will wait for a key
 
 */
-#include <stdio.h>
+#include <conio.h>
 #include <string.h>
-
-void cso(char c)
-{
-  putchar(c);
-}
 
 struct {
   char *should;
@@ -563,8 +499,8 @@ void test(char *should, char *format, unsigned lowint, unsigned highint)
 
   if (strcmp(b, should))
   {
-    printf("\nhit ENTER\n");
-    getchar();
+    printf("\nhit a key\n");
+    getch();
   }
 }
 

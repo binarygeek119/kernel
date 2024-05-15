@@ -35,7 +35,7 @@
 #ifdef MAIN
 #ifdef VERSION_STRINGS
 static BYTE *time_hRcsId =
-    "$Id: time.h 942 2004-05-23 15:00:37Z bartoldeman $";
+    "$Id$";
 #endif
 #endif
 

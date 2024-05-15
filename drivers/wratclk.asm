@@ -29,7 +29,6 @@
 ;
 
                 %include "../kernel/segs.inc"
-                %include "../hdr/stacks.inc"
 
 segment	HMA_TEXT
 
@@ -48,14 +47,13 @@ WRITEATCLOCK:
 ;               bcdMinutes = 6
 ;               bcdHours = 8
 ;               bcdDays = 10
-arg bcdDays, bcdHours, bcdMinutes, bcdSeconds
-                mov     ch,byte [.bcdHours]
-                mov     cl,byte [.bcdMinutes]
-                mov     dh,byte [.bcdSeconds]
+                mov     ch,byte [bp+8]      ;bcdHours
+                mov     cl,byte [bp+6]      ;bcdMinutes
+                mov     dh,byte [bp+4]      ;bcdSeconds
                 mov     dl,0
                 mov     ah,3
                 int     1ah
-                mov     bx,word [.bcdDays]
+                mov     bx,word [bp+10]     ;bcdDays
                 mov     dx,word [bx]
                 mov     cx,word [bx+2]
                 mov     ah,5

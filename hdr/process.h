@@ -28,6 +28,12 @@
 /* Cambridge, MA 02139, USA.                                    */
 /****************************************************************/
 
+#ifdef MAIN
+#ifdef VERSION_STRINGS
+static BYTE *process_hRcsId =
+    "$Id$";
+#endif
+#endif
 
 /*  Modes available as first argument to the spawnxx functions. */
 
@@ -59,16 +65,11 @@ typedef struct {
   UWORD ps_exit;                /* 00 CP/M-like exit point: int 20 */
   UWORD ps_size;                /* 02 segment of first byte beyond */
                                 /*    memory allocated to program  */
-  BYTE ps_fill1;                /* 04 single char fill=0           */
+  BYTE ps_fill1;                /* 04 single char fill             */
 
-  /* CP/M-like entry point                                         */
-  /* offsets 5-9 are a far call to absolute address 0:00C0h
-     encoded using 1MB wrap form of address (e.g. 0F01D:FEF0h)
-     for compatiblity with CP/M apps that do a near call to psp:5
-     and expect size (KB) of allocated segment in word at offset 6 */
-  UBYTE ps_farcall;             /* 05  far call opcode             */
-  intvec ps_reentry;            /* 06  re-entry point              */
-
+  /* CP/M-like entry point                                */
+  UBYTE ps_farcall;             /* 05  far call opcode              */
+  VOID(FAR ASMCFUNC * ps_reentry) (void);  /* 06  re-entry point          */
   intvec ps_isv22,              /* 0a terminate address            */
          ps_isv23,              /* 0e ctrl-break address           */
          ps_isv24;              /* 12 critical error address       */
@@ -79,10 +80,10 @@ typedef struct {
   UWORD ps_maxfiles;            /* 32 maximum open files           */
   UBYTE FAR *ps_filetab;        /* 34 open file table pointer      */
   VOID FAR *ps_prevpsp;         /* 38 previous psp pointer         */
-  UBYTE ps_dbcs_inputmode;      /* 3c unused,see int21/6301h/6302h */
-  UBYTE ps_truename;            /* 3d unused,append truename flag int2f/B711h */
+  UBYTE ps_fill2;               /* 3c unused                       */
+  UBYTE ps_truename;            /* 3d [unused] append truename flag int2f/B711h */
   UBYTE ps_netx_taskid[2];      /* 3e [Novell only field] task id  */
-  UWORD ps_retdosver;           /* 40 version to return on int21/30h, defaults to true version */
+  UWORD ps_retdosver;           /* 40 [unused] version to return on int21/30h */
   UWORD pdb_next;               /* 42 [Win only field] PSP chain   */
   UBYTE ps_fill2b[4];           /* 44 unused, 4 bytes              */
   UBYTE ps_olddos;              /* 48 [Win only field] DOS/Win program */

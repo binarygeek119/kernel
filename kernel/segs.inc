@@ -38,86 +38,60 @@ CPU XCPU
 %endif
 %endif
 
-; for OW on Linux:
-%ifdef owlinux
-%define WATCOM
-%endif
-
-%ifidn __OUTPUT_FORMAT__, obj
 group   PGROUP          PSP
-group   LGROUP          _IRQTEXT _LOWTEXT _IO_TEXT _IO_FIXED_DATA _TEXT
+group   LGROUP          _LOWTEXT _IO_TEXT _IO_FIXED_DATA _TEXT
 group   DGROUP          _FIXED_DATA _BSS _DATA _DATAEND CONST CONST2 DCONST DYN_DATA
 %ifdef WATCOM
 group   TGROUP          HMA_TEXT_START HMA_TEXT HMA_TEXT_END INIT_TEXT_START INIT_TEXT INIT_TEXT_END
-%define IGROUP          TGROUP
 group   I_GROUP         ID_B I_DATA ICONST ICONST2 ID_E IB_B I_BSS IB_E
 %else
 group   TGROUP          HMA_TEXT_START HMA_TEXT HMA_TEXT_END
 group   IGROUP          INIT_TEXT_START INIT_TEXT INIT_TEXT_END
 group   I_GROUP         ID_B ID ID_E IC IDATA IB_B IB IB_E
 %endif
-%define class(x) class=x
-%define nobits
-%define exec
-%define INITSIZE init_end wrt INIT_TEXT
-%define INITTEXTSIZE __INIT_DATA_START wrt INIT_TEXT
 
-%else ; using ELF
-
-BITS 16
-; groups are defined in the linker script kernel.ld
-extern PGROUP
-extern DGROUP
-extern LGROUP
-extern TGROUP
-extern IGROUP
-extern I_GROUP
-%define class(x)
-%define stack
-extern INITSIZE
-%define INITTEXTSIZE __InitTextEnd
-
+segment PSP             class=PSP
+segment	_LOWTEXT	class=LCODE
+segment	_IO_TEXT	class=LCODE
+segment	_IO_FIXED_DATA	class=LCODE align=2
+segment	_TEXT		class=LCODE
+segment	_FIXED_DATA	class=FDATA align=16
+segment	_BSS		class=BSS align=2
+segment _DATA           class=DATA align=2
+segment _DATAEND        class=DATA align=1
+%ifdef MSC
+segment CONST		class=CONST align=2
+%else
+segment CONST		class=DATA align=2
 %endif
-
-segment PSP             class(PSP)
-segment	_IRQTEXT	class(LCODE) exec
-segment	_LOWTEXT	class(LCODE) exec
-segment	_IO_TEXT	class(LCODE) exec
-segment	_IO_FIXED_DATA	class(LCODE) align=2
-segment	_TEXT		class(LCODE) exec
-segment	_FIXED_DATA	class(FDATA) align=16
-segment	_BSS		class(BSS) align=2
-segment _DATA           class(DATA) align=2
-segment _DATAEND        class(DATA) align=1
 ;for WATCOM
-segment CONST		class(DATA) align=2
-segment CONST2		class(DATA) align=2
+segment CONST2		class=DATA align=2
 ;for MSC
-segment	DCONST      	class(DCONST) align=2
-segment	DYN_DATA        class(DYN_DATA)
-segment	HMA_TEXT_START	class(CODE) align=16
-segment	HMA_TEXT	class(CODE) exec
-segment HMA_TEXT_END	class(CODE) align=16
-segment INIT_TEXT_START class(CODE) align=16
-segment	INIT_TEXT	class(CODE) exec
-segment	INIT_TEXT_END   class(CODE) align=16
+segment	DCONST      	class=DCONST   align=2     
+segment	DYN_DATA        class=DYN_DATA
+segment	HMA_TEXT_START	class=CODE align=16
+segment	HMA_TEXT	class=CODE
+segment HMA_TEXT_END	class=CODE
+segment INIT_TEXT_START class=CODE align=16
+segment	INIT_TEXT	class=CODE
+segment	INIT_TEXT_END   class=CODE
 
 %ifdef WATCOM
-segment ID_B            class(FAR_DATA) align=16
-segment I_DATA          class(FAR_DATA) align=2
-segment ICONST          class(FAR_DATA) align=2
-segment ICONST2         class(FAR_DATA) align=2
-segment ID_E            class(FAR_DATA) align=2
-segment IB_B            class(FAR_DATA) align=2
-segment I_BSS           class(FAR_DATA) align=2
-segment IB_E            class(FAR_DATA) align=2
+segment ID_B            class=FAR_DATA align=16
+segment I_DATA          class=FAR_DATA align=2
+segment ICONST          class=FAR_DATA align=2
+segment ICONST2         class=FAR_DATA align=2
+segment ID_E            class=FAR_DATA align=2
+segment IB_B            class=FAR_DATA align=2
+segment I_BSS           class=FAR_DATA align=2
+segment IB_E            class=FAR_DATA align=2
 %else
-segment ID_B            class(ID)  align=16
-segment ID              class(ID)  align=2
-segment IDATA           class(ID)  align=2
-segment ID_E            class(ID)  align=2
-segment	IC      	class(IC)  align=2
-segment	IB_B      	class(IB)  align=2 nobits
-segment	IB      	class(IB)  align=2 nobits
-segment	IB_E      	class(IB)  align=2 nobits
+segment ID_B            class=ID   align=16
+segment ID              class=ID   align=2
+segment IDATA           class=ID   align=2
+segment ID_E            class=ID   align=2
+segment	IC      	class=IC   align=2
+segment	IB_B      	class=IB   align=2
+segment	IB      	class=IB   align=2     
+segment	IB_E      	class=IB   align=2
 %endif

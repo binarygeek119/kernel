@@ -13,25 +13,21 @@
 *  merged into SYS by tom ehlert                                                                        *
 ***************************************************************************/
 
-char VERSION[] = "v1.05";
+/* This source compiled & tested with Borland C/C++ 3.1 + TC 2.01*/
+
+char VERSION[] = "v1.00";
 char PROGRAM[] = "SYS CONFIG";
 char KERNEL[] = "KERNEL.SYS";
 
 #include <stdlib.h>
 #include <string.h>
-#ifndef __GNUC__
 #include <fcntl.h>
-#endif
 
 #include "portab.h"
-/* These definitions deliberately put here instead of
- * #including <stdio.h> to make executable MUCH smaller
- * using [s]printf from prf.c!
- */
-extern int VA_CDECL printf(CONST char * fmt, ...);
-extern int VA_CDECL sprintf(char * buff, CONST char * fmt, ...);
+extern int VA_CDECL printf(const char FAR * fmt, ...);
+extern int VA_CDECL sprintf(char FAR * buff, const char FAR * fmt, ...);
 
-#if defined(__WATCOMC__)
+#ifdef __WATCOMC__
 unsigned _dos_close(int handle);
 #define close _dos_close
 #define SEEK_SET 0
@@ -46,17 +42,9 @@ unsigned long lseek(int fildes, unsigned long offset, int whence);
       parm [bx] [dx cx] [ax] \
       value [dx ax];
 
-#elif defined(__GNUC__)
-#include <unistd.h>
-#include <fcntl.h>
-#define memicmp strncasecmp
-#define O_BINARY 0
 #else
 #include <io.h>
-#ifndef SEEK_SET
-#define SEEK_SET 0
-#endif
-/* #include <stdio.h> */
+#include <stdio.h>
 #endif
 
 #define FAR far
@@ -93,10 +81,7 @@ void showUsage(void)
   printf("  Current Options are: DLASORT=0|1, SHOWDRIVEASSIGNMENT=0|1\n"
          "                       SKIPCONFIGSECONDS=#, FORCELBA=0|1\n"
          "                       GLOBALENABLELBASUPPORT=0|1\n"
-         "                       BootHarddiskSeconds=0|seconds to wait\n"
-         "                       CheckDebugger=0|1|2\n"
-		 "                       Verbose=0|1\n"
-		 );
+         "                       BootHarddiskSeconds=0|seconds to wait\n");
 }
 
 /* simply reads in current configuration values, exiting program
@@ -134,22 +119,6 @@ int readConfigSettings(int kfile, char *kfilename, KernelConfig * cfg)
     exit(1);
   }
 
-  /* check if config settings old UPX header and adjust
-     original UPX header incorrectly set size value to 19,
-     a while back this was fixed and if we ran across a kernel
-     with the wrong value we would update it to 14.  Another bug,
-     the correct value is 6 (possibly 5 if kernel old enough, but
-     we can safely ignore the 'u' value for BootHarddiskSeconds
-     as it won't be used if the kernel doesn't support that option.
-     The "corrected size" incorrectly included the 8 bytes of the CONFIG
-     header ['C','O','N','F','I','G' + WORD ConfigSize ].
-     14 was never valid for a released kernel, so we can safely
-     assume 13 is valid, 15-18 is valid, and >= 20 valid but
-     that a value of 14 or 19 should really be 6.
-  */
-  if ((cfg->ConfigSize == 19) || (cfg->ConfigSize == 14))
-    cfg->ConfigSize = 6;  /* ignore 'nused87654321' */
-
   return 1;
 }
 
@@ -175,51 +144,38 @@ void displayConfigSettings(KernelConfig * cfg)
 {
   /* print known options and current value - only if available */
 
-  /* show kernel version if available, read only, no option to modify */
-  if (cfg->ConfigSize >= 12)
-  {
-    printf
-        ("%s kernel %s (build %d.%d OEM:%02X)\n", 
-        (cfg->Version_OemID == 0xFD)?"FreeDOS":"DOS-C",
-        cfg->Version_Release?"Nightly":"Release",
-        cfg->Version_Major,
-        cfg->Version_Revision,
-        cfg->Version_OemID
-        );
-  }
-
   if (cfg->ConfigSize >= 1)
   {
     printf
-        ("DLASORT=0x%02X              Sort disks by drive order:  *0=no, 1=yes\n",
+        ("DLASORT=0x%02X              Sort disks by drive order: *0=no, 1=yes\n",
          cfg->DLASortByDriveNo);
   }
 
   if (cfg->ConfigSize >= 2)
   {
     printf
-        ("SHOWDRIVEASSIGNMENT=0x%02X  Show how drives assigned:   *1=yes 0=no\n",
+        ("SHOWDRIVEASSIGNMENT=0x%02X  Show how drives assigned:  *1=yes 0=no\n",
          cfg->InitDiskShowDriveAssignment);
   }
 
   if (cfg->ConfigSize >= 3)
   {
     printf
-        ("SKIPCONFIGSECONDS=%-3d     time to wait for F5/F8:     *2 sec (skip < 0)\n",
+        ("SKIPCONFIGSECONDS=%-3d     time to wait for F5/F8 :   *2 sec (skip < 0)\n",
          cfg->SkipConfigSeconds);
   }
 
   if (cfg->ConfigSize >= 4)
   {
     printf
-        ("FORCELBA=0x%02X             Always use LBA if possible: *0=no, 1=yes\n",
+        ("FORCELBA=0x%02X            Always use LBA if possible: *0=no, 1=yes\n",
          cfg->ForceLBA);
   }
 
   if (cfg->ConfigSize >= 5)
   {
     printf
-        ("GLOBALENABLELBASUPPORT=0x%02X Enable LBA support:       *1=yes, 0=no\n",
+        ("GLOBALENABLELBASUPPORT=0x%02X Enable LBA support:      *1=yes, 0=no\n",
          cfg->GlobalEnableLBAsupport);
   }
 
@@ -228,27 +184,6 @@ void displayConfigSettings(KernelConfig * cfg)
     printf
         ("BootHarddiskSeconds=%d :      *0=no else seconds to wait for key\n",
          cfg->BootHarddiskSeconds);
-  }
-
-  if (cfg->ConfigSize >= 13)
-  {
-    printf
-        ("CheckDebugger=%d :            *0=no, 1=check, 2=assume\n",
-         cfg->CheckDebugger);
-  }
-
-  if (cfg->ConfigSize >= 14)
-  {
-    printf
-        ("Verbose=%d :                  -1=quiet, *0=normal, 1=verbose\n",
-         cfg->Verbose);
-  }
-  
-  if (cfg->ConfigSize >= 15)
-  {
-    printf
-        ("PartitionMode=0x%02X          How GPT or hybrid GPT/MBR partitions used\n",
-         cfg->PartitionMode);
   }
 
 #if 0                           /* we assume that SYS is as current as the kernel */
@@ -409,7 +344,6 @@ int FDKrnConfigMain(int argc, char **argv)
   char *kfilename = KERNEL;
   int kfile;
   int updates = 0;              /* flag used to indicate if we need to update kernel */
-  int readonly = 0;             /* flag indicates kernel was opened read-only */
   int argstart, i;
   char *cptr;
   char *argptr;
@@ -417,7 +351,7 @@ int FDKrnConfigMain(int argc, char **argv)
   printf("FreeDOS Kernel Configuration %s\n", VERSION);
 
   /* 1st go through and just process arguments (help/filename/etc) */
-  for (i = 1; i < argc; i++)
+  for (i = 2; i < argc; i++)
   {
     argptr = argv[i];
 
@@ -437,10 +371,6 @@ int FDKrnConfigMain(int argc, char **argv)
                  argptr, PROGRAM);
           exit(1);
       }
-    }
-    else if (memicmp(argptr, "CONFIG", 6) == 0)
-    {
-      /* ignore */
     }
   }
 
@@ -466,14 +396,7 @@ int FDKrnConfigMain(int argc, char **argv)
   kfile = open(kfilename, O_RDWR | O_BINARY);
 
   if (kfile < 0)
-  {
-    /* attempt to open read only to allow viewing options */
-    kfile = open(kfilename, O_RDONLY  | O_BINARY);
-    readonly = 1;
-
-    if (kfile < 0)
-      printf("Error: unable to open kernel file <%s>\n", kfilename), exit(1);
-  }
+    printf("Error: unable to open kernel file <%s>\n", kfilename), exit(1);
 
   /* now that we know the filename (default or given) get config info */
   readConfigSettings(kfile, kfilename, &cfg);
@@ -518,16 +441,6 @@ int FDKrnConfigMain(int argc, char **argv)
       setSByteOption(&(cfg.BootHarddiskSeconds),
                      cptr, 0, 127, &updates, "BootHarddiskSeconds");
     }
-    else if (memicmp(argptr, "CheckDebugger", 5) == 0)
-    {
-      setByteOption(&(cfg.CheckDebugger),
-                     cptr, 2, &updates, "CheckDebugger");
-    }
-    else if (memicmp(argptr, "VERBOSE", 3) == 0)
-    {
-      setSByteOption(&(cfg.Verbose),
-                     cptr, -1, 1, &updates, "VERBOSE");
-    }
     else
     {
     illegal_arg:
@@ -537,16 +450,8 @@ int FDKrnConfigMain(int argc, char **argv)
     }
   }
 
-  /* warn user if attempt to modify read-only file */
-  if (updates && readonly)
-  {
-      printf("Kernel %s opened read-only, changes ignored!\n", kfilename);
-      /* reload current settings, ignore newly requested ones */
-      readConfigSettings(kfile, kfilename, &cfg);
-  }
-
   /* write out new config values if modified */
-  if (updates && !readonly)
+  if (updates)
   {
     /* update it */
     if (writeConfigSettings(kfile, &cfg))

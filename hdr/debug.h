@@ -125,20 +125,19 @@
 #endif
 
 
-/* ensure printf is prototyped */
+/* just to be sure printf is declared */
 #if defined(DEBUG) || defined(DEBUGIRQ) || defined(DEBUGCFG) || \
     defined(DEBUGDOSFNS) || defined(CHDIR_DEBUG) || defined(FIND_DEBUG) || \
-    defined(DEBUGFATDIR) || defined(DEBUGFATFS) || \
-    defined(FORCEPRINTF)
+    defined(DEBUGFATDIR) || defined(DEBUGFATFS)
 #ifndef DEBUG_NEED_PRINTF
 #define DEBUG_NEED_PRINTF
 #endif
 #endif
 
 #ifdef DEBUG_NEED_PRINTF
-int VA_CDECL printf(CONST char * fmt, ...);
+VOID VA_CDECL printf(CONST char FAR * fmt, ...);
 #ifdef DEBUG_PRINT_COMPORT
-int VA_CDECL dbgc_printf(CONST char * fmt, ...);
+VOID VA_CDECL dbgc_printf(CONST char FAR * fmt, ...);
 #endif
 #endif
 

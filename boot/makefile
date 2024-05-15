@@ -1,33 +1,37 @@
 #
 # makefile for DOS-C boot
 #
-
+# $Id$
+#
 
 !include "../mkfiles/generic.mak"
 
-production:     fat12com.bin fat16com.bin fat32chs.bin fat32lba.bin oemfat12.bin oemfat16.bin
+########################################################################
 
-fat12com.bin:    boot.asm magic.mac
-		$(NASM) -dISFAT12 $(NASMBOOTFLAGS) boot.asm -lfat12com.lst -ofat12com.bin
+all:		fat12.bin fat16.bin fat32chs.bin fat32lba.bin oemfat12.bin oemfat16.bin
 
-fat16com.bin:    boot.asm magic.mac
-		$(NASM) -dISFAT16 $(NASMBOOTFLAGS) boot.asm -lfat16com.lst -ofat16com.bin
+fat12.bin:	boot.asm $(DEPENDS)
+		$(NASM) -DISFAT12 boot.asm -l$*.lst -o$*.bin
 
-fat32chs.bin:    boot32.asm magic.mac
-		$(NASM) $(NASMBOOTFLAGS) boot32.asm -lfat32chs.lst -ofat32chs.bin
+fat16.bin:	boot.asm $(DEPENDS)
+		$(NASM) -DISFAT16 boot.asm -l$*.lst -o$*.bin
 
-fat32lba.bin:    boot32lb.asm magic.mac
-		$(NASM) $(NASMBOOTFLAGS) boot32lb.asm -lfat32lba.lst -ofat32lba.bin
+fat32chs.bin:	boot32.asm $(DEPENDS)
+		$(NASM) boot32.asm -l$*.lst -o$*.bin
 
-oemfat12.bin:   oemboot.asm magic.mac
-		$(NASM) -dISFAT12 $(NASMBOOTFLAGS) oemboot.asm -loemfat12.lst -ooemfat12.bin
+fat32lba.bin:	boot32lb.asm $(DEPENDS)
+		$(NASM) boot32lb.asm -l$*.lst -o$*.bin
 
-oemfat16.bin:   oemboot.asm magic.mac
-		$(NASM) -dISFAT16 $(NASMBOOTFLAGS) oemboot.asm -loemfat16.lst -ooemfat16.bin
+oemfat12.bin:	oemboot.asm $(DEPENDS)
+		$(NASM) -DISFAT12 oemboot.asm -l$*.lst -o$*.bin
 
-clobber:        clean
-		-$(RM) *.bin status.me
+oemfat16.bin:	oemboot.asm $(DEPENDS)
+		$(NASM) -DISFAT16 oemboot.asm -l$*.lst -o$*.bin
+
+########################################################################
 
 clean:
-		-$(RM) *.lst *.map *.bak *.obj
+		-$(RM) *.bak *.cod *.crf *.err *.las *.lst *.map *.obj *.xrf
 
+clobber:	clean
+		-$(RM) *.bin status.me

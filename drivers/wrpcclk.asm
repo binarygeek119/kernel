@@ -28,7 +28,6 @@
 ; $Header$
 ;
         %include "../kernel/segs.inc"
-        %include "../hdr/stacks.inc"
 
 segment HMA_TEXT
 
@@ -41,7 +40,8 @@ segment HMA_TEXT
 WRITEPCCLOCK:
 ;               Ticks = 4
 		pop	ax			; return address
-		popargs {cx,dx}			; Ticks
+		pop	dx
+		pop	cx			; Ticks
 		push	ax			; restore stack
                 mov     ah,1
                 int     1ah

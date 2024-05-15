@@ -7,6 +7,7 @@
 #include "mcb.h"
 #include "sft.h"
 #include "fat.h"
+#include "fnode.h"
 #include "file.h"
 #include "cds.h"
 #include "device.h"
@@ -16,12 +17,12 @@
 #include "tail.h"
 #include "process.h"
 #include "pcb.h"
+#include "nls.h"
 #include "buffer.h"
 #include "dcb.h"
 #include "lol.h"
 
 #include "init-dat.h"
-#include "nls.h"
 
 #include "kconfig.h"
 
@@ -57,16 +58,13 @@ extern struct _KernelConfig InitKernelConfig;
 #define  memset     init_memset
 #define  strchr     init_strchr
 #define  strcpy     init_strcpy
-#define fstrcpy     init_fstrcpy
 #define  strlen     init_strlen
 #define fstrlen     init_fstrlen
 #endif
 #define open        init_DosOpen
 
 /* execrh.asm */
-#ifndef __WATCOMC__
 WORD   ASMPASCAL execrh(request FAR *, struct dhdr FAR *);
-#endif
 
 /* asmsupt.asm */
 VOID   ASMPASCAL  memset(      void     *s,  int ch,             size_t n);
@@ -76,7 +74,6 @@ int    ASMPASCAL fmemcmp(const void FAR *m1, const void FAR *m2, size_t n);
 VOID   ASMPASCAL  memcpy(      void     *d,  const void     *s,  size_t n);
 VOID   ASMPASCAL fmemcpy(      void FAR *d,  const void FAR *s,  size_t n);
 VOID   ASMPASCAL  strcpy(char           *d,  const char     *s);
-VOID   ASMPASCAL fstrcpy(char       FAR *d,  const char FAR *s);
 size_t ASMPASCAL  strlen(const char     *s);
 size_t ASMPASCAL fstrlen(const char FAR *s);
 char * ASMPASCAL  strchr(const char     *s,  int ch);
@@ -92,7 +89,6 @@ char * ASMPASCAL  strchr(const char     *s,  int ch);
 #pragma aux (pascal_ax) memcmp modify nomemory
 #pragma aux (pascal_ax) fmemcmp modify nomemory
 #pragma aux (pascal_ax) strcpy
-#pragma aux (pascal_ax) fstrcpy
 #pragma aux (pascal_ax) strlen modify nomemory
 #pragma aux (pascal_ax) fstrlen modify nomemory
 #pragma aux (pascal) strchr modify exact [ax dx] nomemory
@@ -128,50 +124,36 @@ intvec getvec(unsigned char intno);
 /* config.c */
 extern struct config Config;
 VOID PreConfig(VOID);
-VOID PreConfig2(VOID);
-VOID DoConfig(int pass);
+void DoConfig(void);
 VOID PostConfig(VOID);
 VOID configDone(VOID);
-VOID FAR * KernelAlloc(size_t nBytes, char type, int mode);
-void FAR * KernelAllocPara(size_t nPara, char type, char *name, int mode);
-char *strcat(char * d, const char * s);
-BYTE * GetStringArg(BYTE * pLine, BYTE * pszString);
+#ifdef I86
+void _seg * alignNextPara(CVFP);
+#else
+#define alignNextPara(x) ((const VOID *)x)
+#endif
+void _seg * KernelAlloc(size_t nBytes, UBYTE type, int mode);
+void _seg * KernelAllocPara(size_t nPara, UBYTE type, CStr name, int mode);
 void DoInstall(void);
-UWORD GetBiosKey(int timeout);
+unsigned GetBiosKey(int timeout);
 
 /* diskinit.c */
 COUNT dsk_init(VOID);
 
 /* int2f.asm */
-COUNT ASMPASCAL Umb_Test(void);
-COUNT ASMPASCAL UMB_get_largest(void FAR * driverAddress,
-                                UCOUNT * seg, UCOUNT * size);
+
+int ASMPASCAL UMB_get_largest(CVFP driverAddress, seg_t *, size_t *);
 #ifdef __WATCOMC__
-#pragma aux (pascal) UMB_get_largest modify exact [ax bx cx dx]
+# pragma aux (pascal) UMB_get_largest modify exact [ax bx cx dx]
 #endif
 
 /* inithma.c */
 int MoveKernelToHMA(void);
-VOID FAR * HMAalloc(COUNT bytesToAllocate);
-
-/* initoem.c */
-unsigned init_oem(void);
-void movebda(size_t bytes, unsigned new_seg);
-unsigned ebdasize(void);
-
-/* dosidle.asm */
-extern void ASM DosIdle_hlt(VOID);
+VFP HMAalloc(COUNT bytesToAllocate);
 
 /* intr.asm */
 
-/*
- * Invoke interrupt "nr" with all registers from *rp loaded
- * into the processor registers (except: SS, SP,& flags)
- * On return, all processor registers are stored into *rp (including
- * flags).
- */
 unsigned ASMPASCAL init_call_intr(int nr, iregs * rp);
-
 unsigned ASMPASCAL read(int fd, void *buf, unsigned count);
 int ASMPASCAL open(const char *pathname, int flags);
 int ASMPASCAL close(int fd);
@@ -179,7 +161,7 @@ int ASMPASCAL dup2(int oldfd, int newfd);
 ULONG ASMPASCAL lseek(int fd, long position);
 seg ASMPASCAL allocmem(UWORD size);
 void ASMPASCAL init_PSPSet(seg psp_seg);
-int ASMPASCAL init_DosExec(int mode, exec_blk * ep, char * lp);
+int ASMPASCAL init_DosExec(int mode, exec_blk *, CStr);
 int ASMPASCAL init_setdrive(int drive);
 int ASMPASCAL init_switchar(int chr);
 void ASMPASCAL keycheck(void);
@@ -204,10 +186,13 @@ VOID ASMCFUNC init_stacks(VOID FAR * stack_base, COUNT nStacks,
                           WORD stackSize);
 
 /* inthndlr.c */
+VOID ASMCFUNC FAR int21_entry(iregs UserRegs);
+VOID ASMCFUNC int21_service(iregs far * r);
 VOID ASMCFUNC FAR int0_handler(void);
 VOID ASMCFUNC FAR int6_handler(void);
-VOID ASMCFUNC FAR int19_handler(void);
 VOID ASMCFUNC FAR empty_handler(void);
+VOID ASMCFUNC FAR int13_handler(void);
+/* VOID ASMCFUNC FAR int19_handler(void); */
 VOID ASMCFUNC FAR int20_handler(void);
 VOID ASMCFUNC FAR int21_handler(void);
 VOID ASMCFUNC FAR int22_handler(void);
@@ -222,21 +207,24 @@ VOID ASMCFUNC FAR int2f_handler(void);
 VOID ASMCFUNC FAR cpm_entry(void);
 
 /* kernel.asm */
-#ifdef __GNUC__
-VOID ASMCFUNC init_call_p_0(struct config FAR *Config) FAR __attribute__((noreturn));
-#else
-VOID ASMCFUNC FAR init_call_p_0(struct config FAR *Config); /* P_0, actually */
+
+void ASMCFUNC FAR init_call_p_0(const struct config FAR *); /* P_0, actually */
+#ifdef __WATCOMC__
+# pragma aux (cdecl) init_call_p_0 aborts
 #endif
 
 /* main.c */
-VOID ASMCFUNC FreeDOSmain(void);
-BOOL init_device(struct dhdr FAR * dhp, char * cmdLine,
-                      COUNT mode, char FAR **top);
-VOID init_fatal(BYTE * err_msg);
+
+void ASMCFUNC FreeDOSmain(void);
+BOOL init_device(struct dhdr FAR *, PCStr cmdLine, int mode, VFP *top);
+#ifdef __WATCOMC__
+# pragma aux (cdecl) FreeDOSmain aborts
+#endif
 
 /* prf.c */
-int VA_CDECL init_printf(CONST char * fmt, ...);
-int VA_CDECL init_sprintf(char * buff, CONST char * fmt, ...);
+
+VOID VA_CDECL init_printf(const char FAR * fmt, ...);
+VOID VA_CDECL init_sprintf(char FAR * buff, const char FAR * fmt, ...);
 
 /* procsupt.asm */
 VOID ASMCFUNC FAR got_cbreak(void);
@@ -249,39 +237,34 @@ extern UWORD HMAFree;            /* first byte in HMA not yet used      */
 extern unsigned CurrentKernelSegment;
 extern struct _KernelConfig FAR ASM LowKernelConfig;
 extern WORD days[2][13];
-extern BYTE FAR *lpTop;
+extern VFP lpTop;
 extern BYTE ASM _ib_start[], ASM _ib_end[], ASM _init_end[];
-extern UWORD ram_top;               /* How much ram in Kbytes               */
-extern char singleStep;
-extern char SkipAllConfig;
-extern char FAR ASM master_env[128];
 
-extern struct lol FAR *LoL;
+enum {	ASK_ASK	    = 0x01,	/* ?device= device?= */
+	ASK_NOASK   = 0x02,	/* !files=           */
+	ASK_TRACE   = 0x04,	/* F8 processing     */
+	ASK_SKIPALL = 0x08,	/* F5 processing     */
+	ASK_YESALL  = 0x10,	/* Esc while trace   */
+};
+
+extern UBYTE askCommand;
+
+extern struct lol FAR * const LoL;
 
 extern struct dhdr DOSTEXTFAR ASM blk_dev; /* Block device (Disk) driver           */
 
 extern struct buffer FAR *DOSFAR firstAvailableBuf; /* first 'available' buffer   */
 extern struct lol ASM FAR DATASTART;
+extern intvec ASM FAR SAVEDIVLST;
 
-extern BYTE DOSFAR ASM _HMATextAvailable;    /* first byte of available CODE area    */
-extern BYTE FAR ASM _HMATextStart[];          /* first byte of HMAable CODE area      */
-extern BYTE FAR ASM _HMATextEnd[];
-extern BYTE DOSFAR ASM break_ena;  /* break enabled flag                   */
-extern BYTE DOSFAR ASM _InitTextStart[];     /* first available byte of ram          */
-extern BYTE DOSFAR ASM _InitTextEnd[];
-extern BYTE DOSFAR ASM ReturnAnyDosVersionExpected;
-extern BYTE DOSFAR ASM HaltCpuWhileIdle;
+extern BYTE DOSFAR ASM _HMATextAvailable,    /* first byte of available CODE area    */
+  FAR ASM _HMATextStart[],          /* first byte of HMAable CODE area      */
+  FAR ASM _HMATextEnd[], DOSFAR ASM break_ena;  /* break enabled flag                   */
+extern BYTE DOSFAR _InitTextStart,       /* first available byte of ram          */
+  DOSFAR ReturnAnyDosVersionExpected;
 
-extern BYTE DOSFAR ASM internal_data[];
-extern unsigned char DOSTEXTFAR ASM kbdType;
-
-extern struct {
-  char  ThisIsAConstantOne;
-  short TableSize;
-  
-  struct CountrySpecificInfo C;
-  
-} DOSFAR ASM nlsCountryInfoHardcoded;
+extern BYTE FAR ASM internal_data[];
+extern unsigned char FAR ASM kbdType;
 
 /*
     data shared between DSK.C and INITDISK.C
@@ -289,16 +272,10 @@ extern struct {
 
 extern UWORD DOSFAR LBA_WRITE_VERIFY;
 
-/* original interrupt vectors, at 70:xxxx */
-extern struct lowvec {
-  unsigned char intno;
-  intvec isv;
-} DOSTEXTFAR ASM intvec_table[5];
-
 /* floppy parameter table, at 70:xxxx */
 extern unsigned char DOSTEXTFAR ASM int1e_table[0xe];
 
-extern char DOSFAR DiskTransferBuffer[/*MAX_SEC_SIZE*/]; /* in dsk.c */
+extern char DOSFAR DiskTransferBuffer[SEC_SIZE]; /* in dsk.c */
 
 struct RelocationTable {
   UBYTE jmpFar;
@@ -316,18 +293,13 @@ struct RelocatedEntry {
   UWORD jmpSegment;
 };
 
-extern struct RelocationTable DOSFAR ASM _HMARelocationTableStart[];
-extern struct RelocationTable DOSFAR ASM _HMARelocationTableEnd[];
+extern struct RelocationTable
+   DOSFAR ASM _HMARelocationTableStart[],
+   DOSFAR ASM _HMARelocationTableEnd[];
 
 extern void FAR *DOSFAR ASM XMSDriverAddress;
-extern UBYTE DOSFAR ASM XMS_Enable_Patch;
-#ifdef __GNUC__
-extern VOID ASMPASCAL _EnableA20(VOID) FAR;
-extern VOID ASMPASCAL _DisableA20(VOID) FAR;
-#else
 extern VOID ASMPASCAL FAR _EnableA20(VOID);
 extern VOID ASMPASCAL FAR _DisableA20(VOID);
-#endif
 
 extern void FAR * ASMPASCAL DetectXMSDriver(VOID);
 extern int ASMPASCAL init_call_XMScall(void FAR * driverAddress, UWORD ax,
@@ -344,4 +316,3 @@ ULONG ASMCFUNC FAR MULULUL(ULONG mul1, ULONG mul2);     /* MULtiply ULong by ULo
 ULONG ASMCFUNC FAR DIVULUS(ULONG mul1, UWORD mul2);     /* DIVide ULong by UShort */
 ULONG ASMCFUNC FAR DIVMODULUS(ULONG mul1, UWORD mul2, UWORD * rem);     /* DIVide ULong by UShort */
 #endif
-

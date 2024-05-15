@@ -31,26 +31,31 @@
 #ifdef MAIN
 #ifdef VERSION_STRINGS
 static BYTE *fnode_hRcsId =
-    "$Id: fnode.h 1432 2009-06-10 16:10:54Z bartoldeman $";
+    "$Id$";
 #endif
 #endif
 
 struct f_node {
+  UWORD f_count;                /* number of uses of this file  */
+  COUNT f_mode;                 /* read, write, read-write, etc */
+
   UWORD f_flags;                /* file flags                   */
 
-  dmatch *f_dmp;                /* this file's dir match        */
   struct dirent f_dir;          /* this file's dir entry image  */
 
-  ULONG f_dirsector;            /* the sector containing dir entry*/
-  UBYTE f_diridx;               /* offset/32 of dir entry in sec*/
+  UWORD f_diroff;               /* offset/32 of the dir entry   */
+  CLUSTER f_dirstart;           /* the starting cluster of dir  */
   /* when dir is not root         */
   struct dpb FAR *f_dpb;        /* the block device for file    */
 
   ULONG f_offset;               /* byte offset for next op      */
   CLUSTER f_cluster_offset;     /* relative cluster number within file */
   CLUSTER f_cluster;            /* the cluster we are at        */
-  UBYTE f_sft_idx;              /* corresponding SFT index      */
 };
+
+#define F_DMOD  1               /* directory has been modified  */
+#define F_DDIR  2               /* fnode is assigned to dir     */
+#define F_DDATE 4               /* date set using setdate       */
 
 typedef struct f_node *f_node_ptr;
 

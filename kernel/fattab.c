@@ -31,7 +31,7 @@
 
 #ifdef VERSION_STRINGS
 static BYTE *RcsId =
-    "$Id: fattab.c 1631 2011-06-13 16:27:34Z bartoldeman $";
+    "$Id$";
 #endif
 
 /************************************************************************/
@@ -44,27 +44,8 @@ static BYTE *RcsId =
    cluster number rather than overwriting it */
 #define READ_CLUSTER 1
 
-#ifndef ISFAT32
-int ISFAT32(struct dpb FAR * dpbp)
-{
-  return _ISFAT32(dpbp);
-}
-#endif
-
-void clusterMessage(const char * msg, CLUSTER clussec)
-{
-  put_string("Run chkdsk: Bad FAT ");
-  put_string(msg);
-#ifdef WITHFAT32
-  put_unsigned((unsigned)(clussec >> 16), 16, 4);
-#endif
-  put_unsigned((unsigned)(clussec & 0xffffu), 16, 4);
-  put_console('\n');
-}
-
 struct buffer FAR *getFATblock(struct dpb FAR * dpbp, CLUSTER clussec)
 {
-  /* *** why dpbp->dpb_unit? only useful to know in context of the dpbp...? *** */
   struct buffer FAR *bp = getblock(clussec, dpbp->dpb_unit);
 
   if (bp)
@@ -73,7 +54,7 @@ struct buffer FAR *getFATblock(struct dpb FAR * dpbp, CLUSTER clussec)
     bp->b_flag |= BFR_FAT | BFR_VALID;
     bp->b_dpbp = dpbp;
     bp->b_copies = dpbp->dpb_fats;
-    bp->b_offset = dpbp->dpb_fatsize; /* 0 for FAT32 but blockio.c knows that */
+    bp->b_offset = dpbp->dpb_fatsize;
 #ifdef WITHFAT32
     if (ISFAT32(dpbp))
     {
@@ -81,8 +62,6 @@ struct buffer FAR *getFATblock(struct dpb FAR * dpbp, CLUSTER clussec)
         bp->b_copies = 1;
     }
 #endif
-  } else {
-    clusterMessage("I/O: 0x",clussec);
   }
   return bp;
 }
@@ -92,25 +71,14 @@ void read_fsinfo(struct dpb FAR * dpbp)
 {
   struct buffer FAR *bp;
   struct fsinfo FAR *fip;
-  CLUSTER cluster;
-
-  if (dpbp->dpb_xfsinfosec == 0xffff)
-    return;
 
   bp = getblock(dpbp->dpb_xfsinfosec, dpbp->dpb_unit);
   bp->b_flag &= ~(BFR_DATA | BFR_DIR | BFR_FAT | BFR_DIRTY);
   bp->b_flag |= BFR_VALID;
 
   fip = (struct fsinfo FAR *)&bp->b_buffer[0x1e4];
-  /* need to range check values because they may not be correct */
-  cluster = fip->fi_nfreeclst;
-  if (cluster >= dpbp->dpb_xsize)
-    cluster = XUNKNCLSTFREE;
-  dpbp->dpb_xnfreeclst = cluster;
-  cluster = fip->fi_cluster;
-  if (cluster < 2 || cluster > dpbp->dpb_xsize)
-    cluster = UNKNCLUSTER;
-  dpbp->dpb_xcluster = cluster;
+  dpbp->dpb_xnfreeclst = fip->fi_nfreeclst;
+  dpbp->dpb_xcluster = fip->fi_cluster;
 }
 
 void write_fsinfo(struct dpb FAR * dpbp)
@@ -118,19 +86,11 @@ void write_fsinfo(struct dpb FAR * dpbp)
   struct buffer FAR *bp;
   struct fsinfo FAR *fip;
 
-  if (dpbp->dpb_xfsinfosec == 0xffff)
-    return;
-
   bp = getblock(dpbp->dpb_xfsinfosec, dpbp->dpb_unit);
   bp->b_flag &= ~(BFR_DATA | BFR_DIR | BFR_FAT);
-  bp->b_flag |= BFR_VALID;
+  bp->b_flag |= BFR_VALID | BFR_DIRTY;
 
   fip = (struct fsinfo FAR *)&bp->b_buffer[0x1e4];
-
-  if (fip->fi_nfreeclst != dpbp->dpb_xnfreeclst ||
-    fip->fi_cluster != dpbp->dpb_xcluster)
-    bp->b_flag |= BFR_DIRTY; /* only flag for update if we had real news */
-
   fip->fi_nfreeclst = dpbp->dpb_xnfreeclst;
   fip->fi_cluster = dpbp->dpb_xcluster;
 }
@@ -138,10 +98,10 @@ void write_fsinfo(struct dpb FAR * dpbp)
 
 /*                                                              */
 /* The FAT file system is difficult to trace through FAT table. */
-/* There are two kinds of FATs,  12 bit and 16 bit. The 16 bit  */
+/* There are two kinds of FAT's, 12 bit and 16 bit. The 16 bit  */
 /* FAT is the easiest, since it is nothing more than a series   */
-/* of UWORDs.  The 12 bit FAT is difficult, because it packs 3  */
-/* FAT entries into two BYTEs.  These are packed as follows:    */
+/* of UWORD's. The 12 bit FAT is difficult, because it packs 3  */
+/* FAT entries into two BYTE's. These are packed as follows:    */
 /*                                                              */
 /*      0x0003 0x0004 0x0005 0x0006 0x0007 0x0008 0x0009 ...    */
 /*                                                              */
@@ -152,19 +112,13 @@ void write_fsinfo(struct dpb FAR * dpbp)
 /*      12 bytes are compressed to 9 bytes                      */
 /*                                                              */
 
-/* either read the value at Cluster1 (if Cluster2 is READ_CLUSTER) */
-/* or write the Cluster2 value to the FAT entry at Cluster1        */
-/* Read is always via next_cluster wrapper which has extra checks  */
-/* It might make sense to manually check old values before a write */
-/* returns: the cluster number (or 1 on error) for read mode       */
-/* returns: SUCCESS (or 1 on error) for write mode                 */
 CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
                  REG CLUSTER Cluster2)
 {
   struct buffer FAR *bp;
   unsigned idx;
-  unsigned secdiv; /* FAT entries per sector; nibbles for FAT12! */
-  unsigned char wasfree;
+  unsigned secdiv;
+  unsigned char wasfree = 0;
   CLUSTER clussec = Cluster1;
   CLUSTER max_cluster = dpbp->dpb_size;
 
@@ -173,17 +127,14 @@ CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
     max_cluster = dpbp->dpb_xsize;
 #endif
  
-  if (clussec <= 1 || clussec > max_cluster) /* try to read out of range? */
+  if (clussec <= 1 || clussec > max_cluster)
   {
-    clusterMessage("index: 0x",clussec); /* bad array offset */
-    return 1;
-  }
-
-  /* Cluster2 can 0 (FREE) or 1 (READ_CLUSTER), a cluster nr. >= 2, */
-  /* (range check this case!) LONG_LAST_CLUSTER or LONG_BAD here... */
-  if (Cluster2 < LONG_BAD && Cluster2 > max_cluster) /* writing bad value? */
-  {
-    clusterMessage("write: 0x",Cluster2); /* refuse to write bad value */
+    put_string("run CHKDSK: trying to access invalid cluster 0x");
+#ifdef WITHFAT32
+    put_unsigned((unsigned)(clussec >> 16), 16, 4);
+#endif
+    put_unsigned((unsigned)(clussec & 0xffffu), 16, 4);
+    put_console('\n');
     return 1;
   }
 
@@ -220,13 +171,12 @@ CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
   /* Get the block that this cluster is in                */
   bp = getFATblock(dpbp, clussec);
 
-  if (bp == NULL) {
+  if (bp == NULL)
     return 1; /* the only error code possible here */
-  }
 
   if (ISFAT12(dpbp))
   {
-    REG UBYTE FAR *fbp0; REG UBYTE FAR * fbp1;
+    REG UBYTE FAR *fbp0, FAR * fbp1;
     struct buffer FAR * bp1;
     unsigned cluster, cluster2;
 
@@ -250,7 +200,7 @@ CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
       if (bp1 == 0)
         return 1; /* the only error code possible here */
       
-      if (Cluster2 != READ_CLUSTER)
+      if ((unsigned)Cluster2 != READ_CLUSTER)
         bp1->b_flag |= BFR_DIRTY | BFR_VALID;
       
       fbp1 = &bp1->b_buffer[0];
@@ -275,11 +225,8 @@ CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
           return LONG_BAD;
         return cluster;
       }
-
-      wasfree = 0;
       if (cluster == FREE)
-        wasfree = 1;
-
+        wasfree++;
       cluster = res;
     }
 
@@ -288,7 +235,7 @@ CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
     cluster2 = (unsigned)Cluster2 & 0x0fff;
 
     /* Now pack the value in                                */
-    if ((unsigned)Cluster1 & 0x01)
+    if (Cluster1 & 0x01)
     {
       cluster &= 0x000f;
       cluster2 <<= 4;
@@ -319,9 +266,8 @@ CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
     /* Finally, put the word into the buffer and mark the   */
     /* buffer as dirty.                                     */
     fputword(&bp->b_buffer[idx * 2], (UWORD)Cluster2);
-    wasfree = 0;
     if (res == FREE)
-      wasfree = 1;
+      wasfree++;
   }
 #ifdef WITHFAT32
   else if (ISFAT32(dpbp))
@@ -339,15 +285,12 @@ CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
     /* Finally, put the word into the buffer and mark the   */
     /* buffer as dirty.                                     */
     fputlong(&bp->b_buffer[idx * 4], Cluster2 & LONG_LAST_CLUSTER);
-    wasfree = 0;
     if (res == FREE)
-      wasfree = 1;
+      wasfree++;
   }
 #endif
-  else {
-    put_string("Bad DPB!\n"); /* FAT1x size field > 65525U (see fat.h) */
+  else
     return 1;
-  }
 
   /* update the free space count                          */
   bp->b_flag |= BFR_DIRTY | BFR_VALID;
@@ -355,9 +298,9 @@ CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
   {
     int adjust = 0;
     if (!wasfree)
-      adjust = 1;
+      adjust++;
     else if (Cluster2 != FREE)
-      adjust = -1;
+      adjust--;
 #ifdef WITHFAT32
     if (ISFAT32(dpbp) && dpbp->dpb_xnfreeclst != XUNKNCLSTFREE)
     {
@@ -374,40 +317,10 @@ CLUSTER link_fat(struct dpb FAR * dpbp, CLUSTER Cluster1,
   return SUCCESS;
 }
 
-/* Given the disk parameters, and a cluster number, this function */
-/* looks at the FAT, and returns the next cluster in the clain or */
-/* 0 if there is no chain, 1 on error, LONG_LAST_CLUSTER at end.  */
+/* Given the disk parameters, and a cluster number, this function
+   looks at the FAT, and returns the next cluster in the clain. */
 CLUSTER next_cluster(struct dpb FAR * dpbp, CLUSTER ClusterNum)
 {
-  CLUSTER candidate, following, max_cluster;
-  candidate = link_fat(dpbp, ClusterNum, READ_CLUSTER);
-  /* empty (0) error (1) bad (LONG_BAD) last (>LONG_BAD) need no checks */
-#if 0
-  if (candidate == ClusterNum)
-    return 1; /* chain has a tiny loop - easy but boring error check */
-#endif
-  if (candidate < 2 || candidate >= LONG_BAD)
-    return candidate;
-  max_cluster = dpbp->dpb_size;
-#ifdef WITHFAT32
-  if (ISFAT32(dpbp))
-    max_cluster = dpbp->dpb_xsize;
-#endif
-  /* FAT entry points to a possibly invalid next cluster */
-  following = link_fat(dpbp, candidate, READ_CLUSTER);
-  if (following<2 || (following < LONG_BAD && following > max_cluster))
-  {
-    /* chain must not contain free or out of range clusters */
-    clusterMessage("value: 0x",following); /* read returned bad value */
-    return 1; /* only possible error code here */
-  }
-  /* without checking "following", a chain can dangle to a free cluster: */
-  /* if that cluster is later used by another chain, you get cross links */
-  return candidate;
+  return link_fat(dpbp, ClusterNum, READ_CLUSTER);
 }
 
-/* check if the selected cluster is free (faster than next_cluster) */
-BOOL is_free_cluster(struct dpb FAR * dpbp, CLUSTER ClusterNum)
-{
-  return (link_fat(dpbp, ClusterNum, READ_CLUSTER) == FREE);
-}

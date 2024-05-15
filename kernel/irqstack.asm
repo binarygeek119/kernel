@@ -24,95 +24,88 @@
 ; write to the Free Software Foundation, 675 Mass Ave,
 ; Cambridge, MA 02139, USA.
 ;
-; $Id: irqstack.asm 1567 2011-04-09 02:03:20Z bartoldeman $
+; $Id$
 ;
 
 
 ;       Code for stack switching during hardware interrupts.
 
-; Format of interrupt sharing protocol interrupt handler entry point: 
-; Offset  Size    Description     (Table 02568)
-;  00h  2 BYTEs   short jump to actual start of interrupt handler, immediately
-;                   following this data block (EBh 10h)
-;  02h    DWORD   address of next handler in chain
-;  06h    WORD    signature 424Bh
-;  08h    BYTE    EOI flag
-;                 00h software interrupt or secondary hardware interrupt handler
-;                 80h primary hardware interrupt handler (will issue EOI to
-;                       interrupt controller)
-;  09h  2 BYTEs   short jump to hardware reset routine
-;                 must point at a valid FAR procedure (may be just RETF)
-;  0Bh  7 BYTEs   reserved (0) by IBM for future expansion
-
-; Ralf Brown documents that irq 2, 3, 4, 5, 6, 10, 11, 12, 14, 15 use the above
-; protocol..
-; MS (http://support.microsoft.com/kb/84300/)
-; documents that STACKS= implements stacks for interrupt vectors
-; 02H, 08-0EH, 70H, and 72-77H.
-; that means that we need to redirect NMI (INT 2), irq 0, 1, 8, 13 without sharing
-; irq 9 (==irq2) and irq 7 (printer) are not handled at all
-
 %include "segs.inc"
 
-segment	_IRQTEXT
+segment	_LOWTEXT
 
+global _old_vectors
+_old_vectors     times 16 dd 0
 stack_size      dw      0
 stack_top       dw      0
 stack_offs      dw      0
 stack_seg       dw      0
 
-%macro irq 0
-                call    general_irq_service
-                dd      0
-%endmacro
+irq_0:          push    bx
+                mov     bx, 0 * 4
+                jmp     short general_irq_service
 
-%macro irqshare 1
-                jmp     short %%1
-                dd      0
-                dw      424bh
-                db      0
-                jmp     short retf%1
-                times 7 db 0
-%%1:            call    general_irq_service_share
-%endmacro
+irq_1:          push    bx
+                mov     bx, 1 * 4
+                jmp     short general_irq_service
 
-nmi:            irq
-irq_0:          irq
-irq_1:          irq
-irq_08:         irq
-irq_0d:         irq
+irq_2:          push    bx
+                mov     bx, 2 * 4
+                jmp     short general_irq_service
 
-retf1:          retf
-irq_2:          irqshare        1
-irq_3:          irqshare        1
-irq_4:          irqshare        1
-irq_5:          irqshare        1
-irq_6:          irqshare        1
-irq_0a:         irqshare        2
-irq_0b:         irqshare        2
-irq_0c:         irqshare        2
-irq_0e:         irqshare        2
-irq_0f:         irqshare        2
-retf2:          retf
+irq_3:          push    bx
+                mov     bx, 3 * 4
+                jmp     short general_irq_service
 
-                ; align to 100h to align _LOWTEXT for interrupt vectors
-                ; in kernel.asm
-                times (100h - ($ - stack_size)) db 0
+irq_4:          push    bx
+                mov     bx, 4 * 4
+                jmp     short general_irq_service
 
-segment _IO_TEXT
+irq_5:          push    bx
+                mov     bx, 5 * 4
+                jmp     short general_irq_service
+
+irq_6:          push    bx
+                mov     bx, 6 * 4
+                jmp     short general_irq_service
+
+irq_7:          push    bx
+                mov     bx, 7 * 4
+                jmp     short general_irq_service
+
+irq_08:         push    bx
+                mov     bx, 8 * 4
+                jmp     short general_irq_service
+
+irq_09:         push    bx
+                mov     bx, 9 * 4
+                jmp     short general_irq_service
+
+irq_0a:         push    bx
+                mov     bx, 0ah * 4
+                jmp     short general_irq_service
+
+irq_0b:         push    bx
+                mov     bx, 0bh * 4
+                jmp     short general_irq_service
+
+irq_0c:         push    bx
+                mov     bx, 0ch * 4
+                jmp     short general_irq_service
+
+irq_0d:         push    bx
+                mov     bx, 0dh * 4
+                jmp     short general_irq_service
+
+irq_0e:         push    bx
+                mov     bx, 0eh * 4
+                jmp     short general_irq_service
+
+irq_0f:         push    bx
+                mov     bx, 0fh * 4
+;                jmp     short general_irq_service
 
 general_irq_service:
-                push    bx
-                mov     bx, sp
-                mov     bx, [ss:bx+2]   ; return address->old ivec
-                jmp     short common_irq
-        
-general_irq_service_share:
-                push    bx
-                mov     bx, sp
-                mov     bx, [ss:bx+2]   ; return address->old ivec
-                sub     bx, byte irq_3 - irq_2 - 2
-common_irq:
                 push    dx
                 push    ax
                 push    ds
@@ -137,7 +130,7 @@ common_irq:
                 sub     [stack_top], ax
 
                 pushf
-                call    far word [bx]
+                call    far word [_old_vectors+bx]
 
                 cli
                 add     [stack_top], ax
@@ -148,16 +141,19 @@ common_irq:
                 mov     ss, dx          ; switch back to old stack
                 mov     sp, ax
 
-return:         pop     ds              ; restore registers and return
+                pop     ds              ; restore registers and return
                 pop     ax
                 pop     dx
                 pop     bx
-                add     sp, byte 2
                 iret
 
 dont_switch:    pushf
-                call    far word [bx]
-                jmp     short return
+                call    far word [_old_vectors+bx]
+                pop     ds
+                pop     ax
+                pop     dx
+                pop     bx
+                iret
 
 
 segment	INIT_TEXT
@@ -165,9 +161,6 @@ segment	INIT_TEXT
 global  _init_stacks
 ; VOID    init_stacks(VOID FAR *stack_base, COUNT nStacks, WORD stackSize);
 
-int_numbers:            db 2,8,9,70h,75h
-int_numbers_share:      db 0ah,0bh,0ch,0dh,0eh,72h,73h,74h,76h,77h
-        
 _init_stacks:
                 push    bp
                 mov     bp, sp
@@ -176,9 +169,8 @@ _init_stacks:
                 push    si
 
 
-		mov	ax,LGROUP
+		mov	ax,_LOWTEXT
 		mov	ds,ax
-		mov	es,ax
 
                 mov     bx, [bp+4]
                 mov     dx, [bp+6]
@@ -191,22 +183,31 @@ _init_stacks:
 
                 mul     cx
                 add     ax, bx
-                ; stack_top = stack_size * nStacks + stack_seg:stack_offs
-                mov     [stack_top], ax 
+                mov     [stack_top], ax
 
                 xor     ax, ax
                 mov     ds, ax
 
-                mov     di, nmi + 3
-                mov     dx, nmi
-                mov     bx, int_numbers
-                mov     cx, int_numbers_share - int_numbers
-                mov     bp, irq_1 - irq_0
+		mov	ax, _LOWTEXT
+		mov	es, ax
+
+                mov     di, _old_vectors
+                mov     si, 8 * 4
+                mov     cx, 10h
+                rep     movsw
+
+                mov     si, 70h * 4
+                mov     cx, 10h
+                rep     movsw
+
+                push    ds
+                pop     es
+
+                mov     di, 8 * 4
+                mov     dx, irq_0
                 call    set_vect
 
-                inc     dx ; skip over retf (not di: go from nmi+3 to irq_2+2)
-                mov     cx, _init_stacks - int_numbers_share
-                mov     bp, irq_3 - irq_2
+                mov     di, 70h * 4
                 call    set_vect
 
                 pop     si
@@ -215,32 +216,16 @@ _init_stacks:
                 pop     bp
                 ret
 
-; set interrupt vectors:
-; in: es=LGROUP, ds=0
-; bx: pointer to int_numbers bytes in cs
-; cx: number of vectors to set
-; dx: pointer to es:nmi and so on (new interrupt vectors)
-; di: pointer to es:nmi+3 and so on (pointer to place of old interrupt vectors)
-; bp: difference in offset between irq structures
-; out: bx, si, di updated, cx=0, ax destroyed
 set_vect:
-                mov     al, [cs:bx] ; get next int vector offset
-                inc     bx
-                cbw
-                mov     si, ax
-                shl     si, 1
-                shl     si, 1       ; now ds:si -> int vector, es:di -> nmi+3, etc
+                mov     cx, 8
 
-                movsw               ; save old vector
-                movsw
-
+set_next:       mov     ax, dx
                 cli
-                mov     [si-4], dx  ; set new vector
-                mov     [si-2], es
+                stosw
+                mov     ax, _LOWTEXT
+                stosw
                 sti
-
-                add     dx, bp
-                lea     di, [di+bp-4] ; update di, compensating for movsw
-                loop    set_vect
+                add     dx, irq_1 - irq_0
+                loop    set_next
 
                 ret
